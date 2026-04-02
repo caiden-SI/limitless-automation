@@ -44,3 +44,39 @@
 - Populate `.env` with real credentials from 1Password vault "Limitless - Caiden"
 - Run integration verification tasks (build-order.md Week 1-2: Integration Verification)
 - Begin Pipeline Agent implementation once API access is confirmed
+
+---
+
+## Session 2 — April 2, 2026
+
+### Integration Verification — All Four Services Tested
+
+Ran `scripts/verify-integrations.js` against live APIs with real credentials from `.env`.
+
+| Service | Endpoint Tested | Result | Detail |
+|---|---|---|---|
+| Supabase (service role) | `campuses` table query | **PASS** | Connected — 1 row returned. Schema already migrated. |
+| Supabase (anon key) | `campuses` table query | **PASS** | Connected — 0 rows returned (RLS active, blocks anon reads as expected) |
+| Anthropic | `claude-sonnet-4-20250514` message | **PASS** | Model responded correctly |
+| Dropbox | `POST /files/list_folder` (root) | **PASS** | Token valid, root folder empty |
+| Frame.io (v2) | `GET /v2/me` | **PASS** | Authenticated as Caiden Kennedy |
+| Frame.io (v4) | `GET /v4/accounts` | **FAIL** | 401 Unauthorized — v2 token not accepted by v4 API |
+
+### Findings
+- **Supabase schema is already deployed** — `campuses` table exists with at least 1 seeded row. RLS is active (anon key correctly returns fewer results than service role key).
+- **Anthropic API key is live** — `claude-sonnet-4-20250514` confirmed working.
+- **Dropbox token is valid** — short-lived tokens may expire; monitor and implement refresh if needed.
+- **Frame.io v4 API requires separate auth** — the developer token (`fio-u-*`) works with v2 but not v4. The v4 API (post-Adobe acquisition) uses a different OAuth flow. All agent code should target **v2 endpoints** with the current token, or a v4 OAuth token must be generated through Adobe Developer Console.
+
+### Action Items
+- [ ] **Frame.io:** Decide whether to use v2 API (works now) or set up v4 OAuth (requires Adobe Developer Console setup). Update `docs/integrations.md` base URL accordingly.
+- [ ] **Dropbox:** Monitor token expiry — implement refresh token flow if short-lived token expires.
+- [ ] **ClickUp:** Credentials still missing from `.env` — blocked until API key is added from 1Password.
+- [ ] **Fireflies:** Credentials still missing from `.env` — blocked.
+- [ ] **Google Calendar:** Service account JSON not yet created — blocked.
+
+### Next Session Starting Point
+- Resolve Frame.io v2 vs v4 decision with Scott
+- Add remaining credentials (ClickUp, Fireflies, Google Calendar)
+- Run initial schema migration if any tables are still missing (verify full schema.md against live DB)
+- Begin Pipeline Agent implementation
