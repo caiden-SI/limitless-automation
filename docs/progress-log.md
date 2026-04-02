@@ -80,3 +80,42 @@ Ran `scripts/verify-integrations.js` against live APIs with real credentials fro
 - Add remaining credentials (ClickUp, Fireflies, Google Calendar)
 - Run initial schema migration if any tables are still missing (verify full schema.md against live DB)
 - Begin Pipeline Agent implementation
+
+---
+
+## Session 2 (continued) — April 2, 2026
+
+### Built — Pipeline Agent: READY FOR SHOOTING → Dropbox Folder Creation
+
+**Files created/modified:**
+
+- **`lib/dropbox.js`** (new) — Dropbox REST API client with `createFolder(path)` and `listFolder(path)`. Handles conflict (folder already exists) gracefully.
+- **`agents/pipeline.js`** (rewritten) — Full implementation of first trigger:
+  - `handleStatusChange()` — routes by ClickUp status to the correct action
+  - `resolveTask()` — looks up video by `clickup_task_id` in Supabase, creates the row if missing (using ClickUp API stub)
+  - `createDropboxFolders()` — creates `/{campus-slug}/{title}/[FOOTAGE]/` and `/[PROJECT]/` in Dropbox, updates `videos.dropbox_folder` in Supabase
+  - `assignEditor()` — queries editors by campus, picks lowest active count, updates Supabase (ClickUp assignee update stubbed)
+  - `handleFootageDetected()` — verifies files in `[FOOTAGE]` via Dropbox API, updates status to READY FOR EDITING in Supabase (ClickUp status update stubbed)
+- **`handlers/clickup.js`** (updated) — Routes `taskStatusUpdated` events to `pipeline.handleStatusChange()`. Signature verification conditional on `CLICKUP_WEBHOOK_SECRET` being set.
+- **`scripts/test-pipeline-folders.js`** (new) — End-to-end integration test
+
+**ClickUp API stubs (clearly marked TODO):**
+- `getClickUpTaskStub()` — returns minimal task shape, replace with `GET /task/{id}`
+- `assignEditor()` — Supabase assignment works, ClickUp `PUT /task/{id}` assignee update stubbed
+- `handleFootageDetected()` — Supabase status update works, ClickUp `PUT /task/{id}` status update stubbed
+- `handler (clickup.js)` — campus resolution from ClickUp list ID stubbed, falls back to first campus
+
+### Tested
+- **Full integration test passed (5/5 checks):**
+  1. Inserted test video into Supabase
+  2. Called `createDropboxFolders` — created `/austin/__pipeline_test_*/[FOOTAGE]/` and `/[PROJECT]/` in live Dropbox
+  3. Verified both subfolders exist via Dropbox `list_folder` API
+  4. Verified `videos.dropbox_folder` updated in Supabase
+  5. Idempotency: second call succeeded without error (folders already existed)
+- Cleanup: test video deleted from Supabase, test folders deleted from Dropbox
+
+### Next Steps
+- Add ClickUp credentials to `.env` and replace all TODO stubs
+- Build next Pipeline trigger: Dropbox file detection → READY FOR EDITING (1-hour delay)
+- Build editor assignment logic (needs editor rows seeded in `editors` table)
+- Build Frame.io share link creation (status → DONE trigger)

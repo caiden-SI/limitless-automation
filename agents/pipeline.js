@@ -10,6 +10,7 @@
 
 const { supabase } = require('../lib/supabase');
 const { log } = require('../lib/logger');
+const dropbox = require('../lib/dropbox');
 
 const AGENT_NAME = 'pipeline';
 
@@ -54,29 +55,208 @@ async function handleStatusChange(taskId, newStatus, campusId) {
 }
 
 /**
+ * Resolve a ClickUp task ID to the video record and campus in Supabase.
+ * If the video doesn't exist yet, fetches task details from ClickUp and
+ * creates the video row.
+ *
+ * @param {string} taskId - ClickUp task ID
+ * @param {string|null} campusId - Campus UUID if already known
+ * @returns {{ video: object, campus: object }}
+ */
+async function resolveTask(taskId, campusId) {
+  // Try to find existing video by clickup_task_id
+  const { data: video, error: vErr } = await supabase
+    .from('videos')
+    .select('*')
+    .eq('clickup_task_id', taskId)
+    .maybeSingle();
+
+  if (vErr) throw new Error(`Supabase query failed (videos): ${vErr.message}`);
+
+  if (video) {
+    const { data: campus, error: cErr } = await supabase
+      .from('campuses')
+      .select('*')
+      .eq('id', video.campus_id)
+      .single();
+    if (cErr) throw new Error(`Supabase query failed (campuses): ${cErr.message}`);
+    return { video, campus };
+  }
+
+  // Video not in Supabase yet — fetch task details from ClickUp and create it
+  // TODO: Replace stub with real ClickUp API call once CLICKUP_API_KEY is set
+  // const taskData = await clickup.getTask(taskId);
+  // const title = taskData.name;
+  // const studentName = extractStudentName(taskData); // from custom field or description
+  const taskData = await getClickUpTaskStub(taskId);
+
+  // Determine campus — use provided campusId or look up by ClickUp list ID
+  let cid = campusId;
+  if (!cid) {
+    // TODO: Replace stub — resolve campus from taskData.list.id against campuses.clickup_list_id
+    // const { data: c } = await supabase.from('campuses').select('id').eq('clickup_list_id', taskData.list.id).single();
+    // cid = c.id;
+    const { data: c } = await supabase.from('campuses').select('id').limit(1).single();
+    cid = c.id;
+  }
+
+  const { data: campus, error: cErr } = await supabase
+    .from('campuses')
+    .select('*')
+    .eq('id', cid)
+    .single();
+  if (cErr) throw new Error(`Supabase query failed (campuses): ${cErr.message}`);
+
+  // Insert new video record
+  const { data: newVideo, error: iErr } = await supabase
+    .from('videos')
+    .insert({
+      campus_id: cid,
+      clickup_task_id: taskId,
+      title: taskData.name,
+      student_name: taskData.studentName || null,
+      status: 'READY FOR SHOOTING',
+    })
+    .select('*')
+    .single();
+  if (iErr) throw new Error(`Supabase insert failed (videos): ${iErr.message}`);
+
+  return { video: newVideo, campus };
+}
+
+/**
+ * Stub for ClickUp GET /task/{id} — returns minimal task shape.
+ * TODO: Remove when CLICKUP_API_KEY is available.
+ */
+async function getClickUpTaskStub(taskId) {
+  // TODO: Replace with real ClickUp API call:
+  // const res = await fetch(`https://api.clickup.com/api/v2/task/${taskId}`, {
+  //   headers: { Authorization: process.env.CLICKUP_API_KEY },
+  // });
+  // if (!res.ok) throw new Error(`ClickUp API error: ${res.status}`);
+  // return res.json();
+  return {
+    id: taskId,
+    name: `Task ${taskId}`,
+    studentName: null,
+    list: { id: null },
+  };
+}
+
+/**
  * Create Dropbox folders for a concept.
- * Folder structure: /[campus-slug]/[concept-title]/[FOOTAGE]/ and /[PROJECT]/
+ * Folder structure: /{campus-slug}/{concept-title}/[FOOTAGE]/ and /[PROJECT]/
+ *
+ * @param {string} taskId - ClickUp task ID
+ * @param {string|null} campusId - Campus UUID
  */
 async function createDropboxFolders(taskId, campusId) {
-  // TODO: Implement
-  // 1. Query videos table for concept title by clickup_task_id
-  // 2. Query campuses table for campus slug
-  // 3. Call Dropbox API POST /files/create_folder_v2 for both subfolders
-  // 4. Update videos.dropbox_folder in Supabase
-  await log({ campusId, agent: AGENT_NAME, action: 'create_dropbox_folders', payload: { taskId } });
+  const { video, campus } = await resolveTask(taskId, campusId);
+
+  // Sanitize title for use as folder name — strip chars Dropbox doesn't allow
+  const safeTitle = video.title.replace(/[<>:"/\\|?*]/g, '').trim();
+  const basePath = `${campus.dropbox_root}/${safeTitle}`;
+  const footagePath = `${basePath}/[FOOTAGE]`;
+  const projectPath = `${basePath}/[PROJECT]`;
+
+  await log({
+    campusId: campus.id,
+    agent: AGENT_NAME,
+    action: 'creating_dropbox_folders',
+    payload: { taskId, basePath, footagePath, projectPath },
+  });
+
+  // Create all three folders — parent first, then subfolders
+  const baseResult = await dropbox.createFolder(basePath);
+  const footageResult = await dropbox.createFolder(footagePath);
+  const projectResult = await dropbox.createFolder(projectPath);
+
+  const created = [
+    baseResult ? basePath : `${basePath} (existed)`,
+    footageResult ? footagePath : `${footagePath} (existed)`,
+    projectResult ? projectPath : `${projectPath} (existed)`,
+  ];
+
+  // Update video record with Dropbox folder path
+  const { error: uErr } = await supabase
+    .from('videos')
+    .update({ dropbox_folder: basePath, updated_at: new Date().toISOString() })
+    .eq('id', video.id);
+  if (uErr) throw new Error(`Supabase update failed (videos.dropbox_folder): ${uErr.message}`);
+
+  await log({
+    campusId: campus.id,
+    agent: AGENT_NAME,
+    action: 'dropbox_folders_created',
+    payload: { taskId, videoId: video.id, created },
+  });
+
+  return { basePath, footagePath, projectPath };
 }
 
 /**
  * Assign editor with fewest active (IN EDITING) tasks.
  */
 async function assignEditor(taskId, campusId) {
-  // TODO: Implement
-  // 1. Query editors table for active editors in this campus
-  // 2. Count videos with status IN EDITING per editor
-  // 3. Assign to editor with lowest count
-  // 4. Update ClickUp task assignee via API
-  // 5. Update videos.assignee_id in Supabase
-  await log({ campusId, agent: AGENT_NAME, action: 'assign_editor', payload: { taskId } });
+  const { video, campus } = await resolveTask(taskId, campusId);
+
+  // Get active editors for this campus
+  const { data: editors, error: eErr } = await supabase
+    .from('editors')
+    .select('*')
+    .eq('campus_id', campus.id)
+    .eq('active', true);
+  if (eErr) throw new Error(`Supabase query failed (editors): ${eErr.message}`);
+
+  if (!editors || editors.length === 0) {
+    await log({
+      campusId: campus.id,
+      agent: AGENT_NAME,
+      action: 'assign_editor_skipped',
+      status: 'warning',
+      payload: { taskId, reason: 'no active editors' },
+    });
+    return;
+  }
+
+  // Count active tasks per editor
+  const counts = await Promise.all(
+    editors.map(async (editor) => {
+      const { count, error } = await supabase
+        .from('videos')
+        .select('*', { count: 'exact', head: true })
+        .eq('assignee_id', editor.id)
+        .eq('status', 'IN EDITING');
+      return { editor, count: error ? Infinity : count };
+    })
+  );
+
+  // Pick editor with lowest count
+  counts.sort((a, b) => a.count - b.count);
+  const chosen = counts[0].editor;
+
+  // Update video assignee in Supabase
+  const { error: uErr } = await supabase
+    .from('videos')
+    .update({ assignee_id: chosen.id, updated_at: new Date().toISOString() })
+    .eq('id', video.id);
+  if (uErr) throw new Error(`Supabase update failed (videos.assignee_id): ${uErr.message}`);
+
+  // TODO: Update ClickUp task assignee once CLICKUP_API_KEY is available
+  // await fetch(`https://api.clickup.com/api/v2/task/${taskId}`, {
+  //   method: 'PUT',
+  //   headers: { Authorization: process.env.CLICKUP_API_KEY, 'Content-Type': 'application/json' },
+  //   body: JSON.stringify({ assignees: { add: [chosen.clickup_user_id] } }),
+  // });
+
+  await log({
+    campusId: campus.id,
+    agent: AGENT_NAME,
+    action: 'editor_assigned',
+    payload: { taskId, videoId: video.id, editorId: chosen.id, editorName: chosen.name, activeCount: counts[0].count },
+  });
+
+  return chosen;
 }
 
 /**
@@ -96,11 +276,55 @@ async function createShareLink(taskId, campusId) {
  * Called after 1-hour delay from Dropbox webhook.
  */
 async function handleFootageDetected(taskId, campusId) {
-  // TODO: Implement
-  // 1. Verify files still exist in folder (not a false trigger)
-  // 2. Update ClickUp status: READY FOR SHOOTING → READY FOR EDITING
-  // 3. Update videos.status in Supabase
-  await log({ campusId, agent: AGENT_NAME, action: 'footage_detected', payload: { taskId } });
+  const { video, campus } = await resolveTask(taskId, campusId);
+
+  if (!video.dropbox_folder) {
+    await log({
+      campusId: campus.id,
+      agent: AGENT_NAME,
+      action: 'footage_detected_skipped',
+      status: 'warning',
+      payload: { taskId, reason: 'no dropbox_folder set' },
+    });
+    return;
+  }
+
+  // Verify files actually exist in [FOOTAGE] subfolder
+  const footagePath = `${video.dropbox_folder}/[FOOTAGE]`;
+  const entries = await dropbox.listFolder(footagePath);
+  const files = entries.filter((e) => e.tag === 'file');
+
+  if (files.length === 0) {
+    await log({
+      campusId: campus.id,
+      agent: AGENT_NAME,
+      action: 'footage_detected_empty',
+      status: 'warning',
+      payload: { taskId, footagePath },
+    });
+    return;
+  }
+
+  // Update status in Supabase
+  const { error: uErr } = await supabase
+    .from('videos')
+    .update({ status: 'READY FOR EDITING', updated_at: new Date().toISOString() })
+    .eq('id', video.id);
+  if (uErr) throw new Error(`Supabase update failed (videos.status): ${uErr.message}`);
+
+  // TODO: Update ClickUp task status once CLICKUP_API_KEY is available
+  // await fetch(`https://api.clickup.com/api/v2/task/${taskId}`, {
+  //   method: 'PUT',
+  //   headers: { Authorization: process.env.CLICKUP_API_KEY, 'Content-Type': 'application/json' },
+  //   body: JSON.stringify({ status: 'READY FOR EDITING' }),
+  // });
+
+  await log({
+    campusId: campus.id,
+    agent: AGENT_NAME,
+    action: 'footage_detected_status_updated',
+    payload: { taskId, videoId: video.id, fileCount: files.length, newStatus: 'READY FOR EDITING' },
+  });
 }
 
 module.exports = {
