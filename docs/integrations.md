@@ -1,0 +1,211 @@
+# Integrations — Limitless Media Agency
+
+All credentials stored in shared 1Password vault: "Limitless - Caiden"
+All accounts owned by Limitless Media Agency LLC.
+
+---
+
+## ClickUp
+
+**Purpose:** Task management and pipeline status tracking. Central hub for all video project state.
+**API Docs:** https://clickup.com/api/
+**Base URL:** `https://api.clickup.com/api/v2/`
+
+**Key endpoints used:**
+- `GET /task/{task_id}` — get task details
+- `PUT /task/{task_id}` — update task status, fields, assignee
+- `POST /list/{list_id}/task` — create new task
+- `GET /list/{list_id}/task` — get all tasks in a list
+
+**Webhook events to listen for:**
+- `taskStatusUpdated` — fires when status changes
+- `taskCreated` — fires when new task created
+
+**Auth:** Personal API key in Authorization header
+**Credential location:** 1Password → "ClickUp API Key"
+
+**Notes:**
+- List ID for Austin campus needs to be confirmed with Scott
+- Custom field ID for Frame.io link needs to be retrieved via API on first run
+- Task status names are case-sensitive — use exact strings from pipeline.md
+
+---
+
+## Dropbox
+
+**Purpose:** File storage for footage and project files. Webhook triggers editing pipeline.
+**API Docs:** https://www.dropbox.com/developers/documentation/http/documentation
+**Base URL:** `https://api.dropboxapi.com/2/`
+
+**Key endpoints used:**
+- `POST /files/create_folder_v2` — create concept folder + subfolders
+- `POST /files/list_folder` — check folder contents (file count)
+- `POST /files/list_folder/longpoll` — or webhook for file changes
+
+**Webhook events to listen for:**
+- File added to `[FOOTAGE]` subfolder → trigger status change to READY FOR EDITING
+
+**Auth:** App Key + App Secret (OAuth 2.0 flow or long-lived token)
+**Credential location:** 1Password → "Dropbox App Key" + "Dropbox App Secret"
+
+**Folder structure:**
+```
+/[campus-slug]/[concept-title]/[FOOTAGE]/
+/[campus-slug]/[concept-title]/[PROJECT]/
+```
+
+**Notes:**
+- Dropbox desktop sync is already set up and working for the team — do not interfere with this
+- The existing Dropbox database Scott built needs to be reviewed before finalizing schema
+- 1-hour delay recommended after footage upload before triggering editing pipeline (time for full sync)
+
+---
+
+## Frame.io
+
+**Purpose:** Video review and client delivery.
+**API Docs:** https://developer.frame.io/api/reference/
+**Base URL:** `https://api.frame.io/v4/`
+
+**Key endpoints used:**
+- `POST /assets` — upload video
+- `GET /assets/{asset_id}/comments` — check for review comments
+- `POST /assets/{asset_id}/share_links` — create client share link
+
+**Webhook events to listen for:**
+- Comment created on asset → trigger NEEDS REVISIONS status change in ClickUp
+
+**Auth:** API token (generated from developer.frame.io)
+**Credential location:** 1Password → "Frame.io API Token"
+
+**Notes:**
+- Frame.io was acquired by Adobe — v4 API is current. Verify comment webhook behavior before building QA trigger.
+- Caiden has been invited to "Scott's Account" team — accept invite and generate token from inside that account
+- Internal Frame link goes into ClickUp custom link field
+- Client share link goes directly to student
+
+---
+
+## Fireflies
+
+**Purpose:** Meeting transcript and action item extraction. Scott's existing scripts already use this.
+**API:** GraphQL at `https://api.fireflies.ai/graphql`
+**Docs:** https://docs.fireflies.ai/
+
+**Key queries used:**
+- `transcripts` — fetch recent transcripts
+- Filter by date range for last 48hrs (matching Scott's existing sync pattern)
+
+**Auth:** API key in Authorization header
+**Credential location:** 1Password → "Fireflies API Key"
+
+**Notes:**
+- Scott already has a working `fireflies_sync.py` script. Review this before building new integration to avoid duplication.
+- Existing script runs at 9PM nightly via cron, fetches last 48hrs, extracts Scott's action items, deduplicates against ClickUp, creates tasks.
+- Do not break or replace the existing script — integrate alongside it or extend it.
+
+---
+
+## Google Calendar
+
+**Purpose:** Trigger for Scripting Agent — fires when a student is scheduled for filming.
+**API Docs:** https://developers.google.com/calendar/api/guides/overview
+**Auth:** Service Account with Calendar API enabled
+
+**Setup:**
+1. Google Cloud Console → New project "Limitless Automation"
+2. Enable Google Calendar API
+3. Create Service Account → download credentials JSON
+4. Share the relevant calendar with the service account email
+
+**Key endpoints used:**
+- `GET /calendars/{calendarId}/events` — poll for upcoming events
+- Or use Google Calendar push notifications (webhooks) for real-time triggering
+
+**Credential location:** 1Password → "Google Calendar Service Account JSON"
+
+**Notes:**
+- Trigger logic: when an event with a student name appears on the filming calendar, fire the Scripting Agent for that student
+- Need to confirm with Scott: what does a filming calendar event look like? What's in the title/description? Does it include the student name explicitly?
+- Google Calendar integration was confirmed as the preferred trigger in the kickoff meeting — replacing the idea of students self-initiating
+
+---
+
+## Supabase
+
+**Purpose:** Central database. All agents read/write here.
+**Dashboard:** https://supabase.com/dashboard
+**Docs:** https://supabase.com/docs
+
+**Connection:**
+- Project URL: `https://[project-ref].supabase.co`
+- Service Role Key: use for agent server-side calls (bypasses RLS)
+- Anon Key: use for dashboard frontend
+
+**Credential location:** 1Password → "Supabase URL" + "Supabase Service Role Key" + "Supabase Anon Key"
+
+**Notes:**
+- Scott created the Supabase org under scott@limitlessyt.com — Caiden invited as Owner
+- Initial schema migration runs once to create all tables — see schema.md
+- Enable RLS on all tables after initial setup
+
+---
+
+## Anthropic API
+
+**Purpose:** Claude API calls for all agent intelligence.
+**Console:** https://console.anthropic.com
+**Docs:** https://docs.anthropic.com
+
+**Model:** `claude-sonnet-4-20250514` for all agents
+
+**Auth:** API key in x-api-key header
+**Credential location:** 1Password → "Anthropic API Key"
+
+**Notes:**
+- Account created by Scott under Limitless billing — Caiden invited as member
+- Initial credits added at account creation
+- Monitor usage in console — estimated $50-150/month at current video volume
+- This is completely separate from Claude.ai subscription
+
+---
+
+## Webhook Server
+
+**Purpose:** Receives all inbound webhooks from ClickUp, Dropbox, Frame.io. Routes to correct handler.
+**Runtime:** Express.js on Mac Mini, managed by PM2
+**Port:** 3000 (or configurable via .env)
+
+**Routes:**
+```
+POST /webhooks/clickup    → handlers/clickup.js
+POST /webhooks/dropbox    → handlers/dropbox.js
+POST /webhooks/frameio    → handlers/frameio.js
+```
+
+**Verification:**
+- ClickUp sends a signature header — verify before processing
+- Dropbox sends a challenge on webhook registration — handle the GET verification request
+- Frame.io sends a signature — verify before processing
+
+**Environment Variables (.env):**
+```
+SUPABASE_URL=
+SUPABASE_SERVICE_ROLE_KEY=
+ANTHROPIC_API_KEY=
+CLICKUP_API_KEY=
+CLICKUP_WEBHOOK_SECRET=
+DROPBOX_APP_KEY=
+DROPBOX_APP_SECRET=
+DROPBOX_ACCESS_TOKEN=
+FRAMEIO_API_TOKEN=
+FRAMEIO_WEBHOOK_SECRET=
+FIREFLIES_API_KEY=
+GOOGLE_CALENDAR_CREDENTIALS_PATH=
+PORT=3000
+```
+
+**Notes:**
+- All sensitive values in .env — never commit to Git
+- .env.example committed to repo with placeholder values
+- PM2 ecosystem file manages process restart and environment loading
