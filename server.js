@@ -8,6 +8,8 @@ const { log } = require('./lib/logger');
 const clickupHandler = require('./handlers/clickup');
 const dropboxHandler = require('./handlers/dropbox');
 const frameioHandler = require('./handlers/frameio');
+const scheduler = require('./lib/scheduler');
+const research = require('./agents/research');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -59,6 +61,10 @@ app.use((err, _req, res, _next) => {
 app.listen(PORT, () => {
   console.log(`[server] Limitless webhook server listening on port ${PORT}`);
   log({ agent: 'server', action: `started on port ${PORT}` });
+
+  // Register scheduled agent jobs
+  // Research Agent — daily at 6 AM
+  scheduler.register('research-agent', '0 6 * * *', research.runAll);
 });
 
 // Catch unhandled promise rejections — log before PM2 restarts

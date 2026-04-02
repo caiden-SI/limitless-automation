@@ -166,3 +166,18 @@ A 200 response with account data confirms v4 is working.
 | Resource model | Teams → Projects → Assets | Orgs → Accounts → Workspaces → Projects → Assets |
 
 **Status:** v2 chosen for now. v4 migration path documented. Requires Scott to verify Adobe org prerequisites (steps 1-3) before we can proceed.
+
+---
+
+### 2026-04-02 | Scripting Agent blocked — student context approach under review
+
+**Decision:** Do not build the Scripting Agent until Scott confirms how student context will be collected and stored. Research and Performance agents proceed as planned.
+
+**Rationale:** The `students` table has a `claude_project_context` field intended to give the Scripting Agent per-student context for script generation. However, this field may have incomplete or placeholder data — the approach for collecting and maintaining student context (manual entry, intake form, interview notes, etc.) has not been finalized with Scott. Building the Scripting Agent against unreliable context data would produce low-quality script output and require rework.
+
+**Blocked on:** Confirmation from Scott on:
+1. What data populates `students.claude_project_context` (source and format)
+2. Whether the current data is complete enough to generate scripts against
+3. Preferred collection method going forward
+
+**Status:** Blocked — awaiting Scott's input. Research Agent and Performance Agent are unblocked and proceed on schedule.

@@ -165,3 +165,44 @@ QA correctly failed the test video (24 total issues). Cleanup: video deleted fro
 - Install FFmpeg on Mac Mini for LUFS checks in production
 - Add ClickUp credentials → enable QA report posting to task comments
 - Build Research Agent or remaining Pipeline triggers (Dropbox file detection, Frame.io share link)
+
+---
+
+## Session 2 (continued) — April 2, 2026: Research Agent
+
+### Built — Research Agent: Scrape → Classify → Deduplicate → Store
+
+**Files created/modified:**
+
+- **`tools/scraper.js`** (new) — Apify REST API client for TikTok (`clockworks~free-tiktok-scraper`) and Instagram (`apify~instagram-scraper`). Runs actors synchronously, returns normalized video objects (`url, description, viewCount, transcript, platform`). Gated on `APIFY_API_TOKEN` env var.
+- **`agents/research.js`** (rewritten) — Full research pipeline:
+  1. **Scrape** — Calls `scrapeTikTok()` and `scrapeInstagram()` with configurable search queries (defaults: "student entrepreneur", "alpha school", "homeschool success", "teen startup", "alternative education").
+  2. **Transcript extraction** — Uses scraped transcript if available; otherwise generates approximate transcript from description via Claude.
+  3. **Classification** — Claude classifies each video into `hook_type` (8 types), `format` (8 types), and `topic_tags` (3–5 tags). Validates output against allowed values.
+  4. **Deduplication** — Pre-loads existing `source_url` set from Supabase, skips matches. Also handles DB-level constraint violations (code 23505) gracefully.
+  5. **Storage** — Inserts to `research_library` with all fields: `campus_id, source_url, transcript, hook_type, format, topic_tags, platform, view_count, scraped_at`.
+  6. **`runAll()`** — Iterates all active campuses, called by cron.
+- **`lib/scheduler.js`** (new) — Cron scheduler using `node-cron`. `register(name, schedule, fn)` / `stop(name)` / `stopAll()` / `list()`. Logs job start/complete/error to `agent_logs`.
+- **`server.js`** (updated) — Registers Research Agent cron: daily at 6 AM (`0 6 * * *`).
+- **`scripts/test-research-agent.js`** (new) — Integration test with synthetic video data.
+
+### Tested — Integration Test Results (6/6 passed)
+
+| Check | Result |
+|---|---|
+| Claude classification | `stat` / `talking-head` / 5 tags — all valid | **PASS** |
+| Transcript generation | 1032 chars from description | **PASS** |
+| Insert 3 entries | All stored with correct fields | **PASS** |
+| Verify in Supabase | 3 entries with hook_type, format, tags, view_count | **PASS** |
+| Deduplication | In-app dedup works; DB lacks unique index (noted) | **PASS** |
+| Cron scheduler | Registered and stopped correctly | **PASS** |
+
+### Action Items
+- [ ] Add `APIFY_API_TOKEN` to `.env` from 1Password — required for live scraping
+- [ ] Run in Supabase SQL editor: `CREATE UNIQUE INDEX research_library_campus_url ON research_library(campus_id, source_url)` — enforces dedup at DB level
+- [ ] Confirm scrape frequency with Scott (currently daily at 6 AM)
+- [ ] Tune search queries per campus — defaults are generic "student entrepreneur" etc.
+
+### Next Steps
+- Build Performance Agent (weekly Monday AM cron)
+- Scripting Agent blocked pending Scott confirmation (see decisions.md)
