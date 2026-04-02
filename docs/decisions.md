@@ -61,3 +61,108 @@ Format: Date | Decision | Rationale | Status
 **Rationale:** integrations.md recommends 1-hour delay to allow full Dropbox sync across all team members' machines. Triggering immediately could assign an editor before footage is available locally.
 
 **Status:** Noted in Pipeline Agent spec. Implementation pending.
+
+---
+
+### 2026-04-02 | Frame.io: Use v2 API now, plan v4 migration later
+
+**Decision:** Build all Frame.io agent integrations against the **v2 API** (`https://api.frame.io/v2/`) using the existing developer token (`fio-u-*`). Document the v4 migration path below so we can switch when ready.
+
+**Rationale:** The v4 API requires Adobe OAuth Server-to-Server credentials issued through Adobe Developer Console. Our current developer token authenticates against v2 but returns 401 on all v4 endpoints. Setting up v4 requires Adobe org-level prerequisites (Frame.io provisioned on the Adobe org, Admin/Developer role, product profile assignment) that are outside our control and need Scott's involvement. The v2 API covers all endpoints we need today: asset upload, comments, share links. Building on v2 now avoids blocking the Pipeline and QA agents.
+
+**v4 migration will be required if:** Adobe deprecates v2, or we need v4-only features (workspace-level access controls, Adobe I/O Events for webhooks instead of Frame.io native webhooks).
+
+---
+
+#### Frame.io v4 Setup Instructions (Adobe OAuth Server-to-Server)
+
+When ready to migrate, follow these steps exactly:
+
+**Prerequisites (Scott or Adobe org admin must complete):**
+
+1. **Verify Adobe org has Frame.io provisioned.** Log in to [Adobe Admin Console](https://adminconsole.adobe.com/) → Products. Frame.io must appear as a provisioned product. If it does not, the org admin must add it (requires an active Frame.io Enterprise or Team plan linked to the Adobe org).
+
+2. **Ensure the developer has the correct role.** The person creating the credential needs **Developer** or **System Administrator** role in Adobe Admin Console → Users.
+
+3. **Confirm the Frame.io account is on Adobe identity.** If the team still logs in at `app.frame.io` with email/password (not Adobe SSO), the account has not been migrated. Migration is initiated by Frame.io/Adobe — contact Adobe support if needed.
+
+**Adobe Developer Console Setup:**
+
+4. Go to [Adobe Developer Console](https://developer.adobe.com/console/) and sign in with the Adobe org account.
+
+5. Click **Create new project** → give it a name (e.g., "Limitless Automation").
+
+6. In the project, click **+ Add to Project** → **API**.
+
+7. Find **Frame.io** in the API list (under Creative Cloud). If it does not appear, Frame.io is not provisioned on the org (see prerequisite 1). Select it and click **Next**.
+
+8. Choose **OAuth Server-to-Server** as the credential type. Give the credential a name (e.g., "limitless-automation-server").
+
+9. Select the required **product profiles** — these control what Frame.io data the credential can access. Select the profile that includes "Scott's Account" / the team workspace where video assets live.
+
+10. Click **Save configured API**.
+
+11. On the credential overview page, copy:
+    - `client_id` (also called "API Key")
+    - `client_secret` (click "Retrieve client secret")
+
+**Generate an Access Token:**
+
+12. Request a token from Adobe IMS:
+
+```bash
+curl -X POST 'https://ims-na1.adobelogin.com/ims/token/v3' \
+  -H 'Content-Type: application/x-www-form-urlencoded' \
+  -d 'client_id={CLIENT_ID}&client_secret={CLIENT_SECRET}&grant_type=client_credentials&scope={SCOPES}'
+```
+
+Scopes will be shown on the credential overview page in Adobe Developer Console after setup. They typically include the Frame.io-specific scopes assigned via product profiles.
+
+13. The response returns:
+```json
+{
+  "access_token": "eyJhbGciOi...",
+  "token_type": "bearer",
+  "expires_in": 86400
+}
+```
+
+**Token is valid for 24 hours.** There is no refresh token in the client_credentials flow — request a new token when the current one expires or on 401. Cache the token; Adobe throttles integrations that request tokens too frequently.
+
+**Update .env:**
+
+14. Add to `.env`:
+```
+FRAMEIO_V4_CLIENT_ID=<client_id from step 11>
+FRAMEIO_V4_CLIENT_SECRET=<client_secret from step 11>
+```
+
+15. Build a token manager in `lib/frameio-auth.js` that:
+    - Calls the IMS token endpoint with client credentials
+    - Caches the token in memory
+    - Re-requests on expiry or 401
+    - Returns the Bearer token for v4 API calls
+
+**Verify v4 Access:**
+
+16. Test with:
+```bash
+curl -H "Authorization: Bearer {ACCESS_TOKEN}" https://api.frame.io/v4/accounts
+```
+
+A 200 response with account data confirms v4 is working.
+
+**Webhook migration note:** v4 webhooks use **Adobe I/O Events** (registered in Developer Console → Add Event Registration → Frame.io Events) instead of the v2 `POST /v2/hooks` endpoint. This changes how the QA agent's comment trigger is set up — it will need an Adobe I/O Events subscription rather than a direct Frame.io webhook.
+
+**Key differences between v2 and v4:**
+
+| | v2 (current) | v4 (future) |
+|---|---|---|
+| Base URL | `https://api.frame.io/v2` | `https://api.frame.io/v4` |
+| Auth | `Bearer fio-u-*` developer token | `Bearer eyJ...` Adobe IMS token |
+| Token lifetime | Long-lived | 24 hours (re-request via client_credentials) |
+| Token source | developer.frame.io | Adobe IMS `ims-na1.adobelogin.com/ims/token/v3` |
+| Webhooks | Frame.io native (`POST /v2/hooks`) | Adobe I/O Events |
+| Resource model | Teams → Projects → Assets | Orgs → Accounts → Workspaces → Projects → Assets |
+
+**Status:** v2 chosen for now. v4 migration path documented. Requires Scott to verify Adobe org prerequisites (steps 1-3) before we can proceed.
