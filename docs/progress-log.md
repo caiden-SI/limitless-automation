@@ -262,3 +262,53 @@ Sample recommendation output:
 - Add remaining credentials: ClickUp, Fireflies, Apify
 - Run Supabase unique index migration for research_library
 - Begin Dashboard (React localhost) or remaining Pipeline triggers
+
+---
+
+## Session 2 (continued) — April 2, 2026: React Dashboard
+
+### Built — Dashboard (React + Vite, localhost)
+
+Scaffolded with Vite + React. Connects to Supabase with **anon key only** (no service role key client-side). Five views with auto-refresh polling.
+
+**Files created:**
+
+- **`dashboard/`** — Full React app (Vite)
+  - `src/lib/supabase.js` — Supabase client using `VITE_SUPABASE_ANON_KEY`
+  - `src/lib/hooks.js` — Custom hooks for all data fetching: `useCampuses`, `useVideos`, `useAgentLogs`, `useQAQueue`, `useEditors`, `useEditorCounts`, `usePerformanceSignals`. All auto-refresh on intervals (10–60s).
+  - `src/App.jsx` — Tab navigation + campus selector
+  - `src/components/PipelineView.jsx` — Kanban-style board with 7 status columns (IDEA → DONE), color-coded, QA badges, time-ago timestamps
+  - `src/components/AgentActivityFeed.jsx` — Real-time log feed, color-coded agent badges, error highlighting
+  - `src/components/QAQueue.jsx` — Two sections: "Awaiting QA" (status=EDITED, qa_passed=null) and "QA Failed / Needs Revisions"
+  - `src/components/EditorCapacity.jsx` — Card grid per editor with active task count, capacity bar (green/yellow/red)
+  - `src/components/PerformanceSignals.jsx` — Weekly signal cards with summary, top hooks/formats/topics, recommendations, underperforming patterns
+  - `src/index.css` — Base styles, dark mode support
+  - `src/App.css` — Component styles (board, cards, feed, signals)
+  - `.env.example` — Template for Supabase credentials
+  - `.env` — Populated with live anon key (gitignored)
+- **`scripts/setup-dashboard-rls.sql`** — RLS policies for anon read access to campuses, videos, editors, agent_logs, performance_signals. Also includes research_library unique index.
+- **`.gitignore`** — Added `dashboard/dist/`
+
+### Verified
+- `npm run build` succeeds — 64 modules, 385 KB JS + 4.7 KB CSS (gzipped: 110 KB + 1.4 KB)
+- All 5 components import and render without errors
+
+### Setup Required Before Use
+1. **Run RLS policies** in Supabase SQL Editor: `scripts/setup-dashboard-rls.sql` — anon key currently returns 0 rows because RLS blocks reads without policies
+2. **Start the dashboard**: `cd dashboard && npm run dev` — opens on localhost:5173
+
+### Refresh Intervals
+| View | Interval |
+|---|---|
+| Pipeline | 15s |
+| Agent Activity | 10s |
+| QA Queue | 15s |
+| Editor Capacity | 15s (tasks) / 30s (editors) |
+| Performance Signals | 60s |
+| Campuses | 60s |
+
+### Next Steps
+- Run `scripts/setup-dashboard-rls.sql` in Supabase SQL Editor to enable anon reads
+- Scripting Agent: awaiting Scott confirmation on student context
+- Add remaining credentials: ClickUp, Fireflies, Apify
+- Remaining Pipeline triggers: Dropbox file detection, Frame.io share link

@@ -5,3 +5,4 @@ credentials/
 *.log
 .DS_Store
 .claude/
+dashboard/dist/

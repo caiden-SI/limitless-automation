@@ -1,0 +1,302 @@
+/* Pipeline board */
+.board {
+  display: flex;
+  gap: 12px;
+  overflow-x: auto;
+  padding-bottom: 8px;
+}
+
+.board-col {
+  flex: 0 0 160px;
+  min-height: 200px;
+}
+
+.board-col-header {
+  border-top: 3px solid #6b7280;
+  padding: 8px 0 6px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.board-col-title {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.board-col-count {
+  font-size: 12px;
+  color: var(--text);
+  background: var(--code-bg);
+  border-radius: 10px;
+  padding: 1px 7px;
+}
+
+.board-col-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+/* Cards */
+.card {
+  background: var(--code-bg);
+  border-radius: 6px;
+  padding: 8px 10px;
+  text-align: left;
+}
+
+.card--fail {
+  border-left: 3px solid #ef4444;
+}
+
+.card-title {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-h);
+  line-height: 1.3;
+}
+
+.card-meta {
+  font-size: 11px;
+  color: var(--text);
+  margin-top: 2px;
+}
+
+.card-time {
+  font-size: 10px;
+  color: var(--text);
+  margin-top: 4px;
+}
+
+.card-empty {
+  font-size: 12px;
+  color: var(--text);
+  padding: 12px 0;
+  text-align: center;
+}
+
+/* Badges */
+.badge {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 3px;
+  margin-top: 4px;
+}
+
+.badge-pass {
+  background: rgba(16, 185, 129, 0.15);
+  color: #059669;
+}
+
+.badge-fail {
+  background: rgba(239, 68, 68, 0.15);
+  color: #dc2626;
+}
+
+/* Agent activity feed */
+.feed {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 600px;
+  overflow-y: auto;
+}
+
+.feed-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 4px;
+  font-size: 13px;
+}
+
+.feed-item--error {
+  background: rgba(239, 68, 68, 0.08);
+}
+
+.agent-badge {
+  font-size: 10px;
+  font-weight: 600;
+  color: #fff;
+  padding: 2px 6px;
+  border-radius: 3px;
+  text-transform: uppercase;
+  flex-shrink: 0;
+}
+
+.feed-action {
+  flex: 1;
+  color: var(--text-h);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.feed-time {
+  font-size: 11px;
+  color: var(--text);
+  flex-shrink: 0;
+}
+
+/* QA sections */
+.qa-section {
+  margin-bottom: 20px;
+}
+
+.qa-section h3 {
+  font-size: 15px;
+  margin: 0 0 8px;
+  color: var(--text-h);
+}
+
+.count {
+  font-size: 13px;
+  color: var(--text);
+  font-weight: 400;
+}
+
+.count--fail {
+  color: #ef4444;
+}
+
+/* Editor capacity */
+.editor-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 10px;
+}
+
+.editor-card {
+  background: var(--code-bg);
+  border-radius: 8px;
+  padding: 14px;
+  text-align: center;
+}
+
+.editor-name {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-h);
+}
+
+.editor-count {
+  font-size: 32px;
+  font-weight: 700;
+  color: #10b981;
+  margin: 6px 0 2px;
+}
+
+.editor-count--high {
+  color: #ef4444;
+}
+
+.editor-label {
+  font-size: 11px;
+  color: var(--text);
+}
+
+.capacity-bar {
+  height: 4px;
+  background: var(--border);
+  border-radius: 2px;
+  margin-top: 8px;
+  overflow: hidden;
+}
+
+.capacity-fill {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 0.3s;
+}
+
+/* Performance signals */
+.signal-card {
+  background: var(--code-bg);
+  border-radius: 8px;
+  padding: 16px;
+  margin-bottom: 12px;
+  text-align: left;
+}
+
+.signal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.signal-week {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-h);
+}
+
+.signal-summary {
+  font-size: 14px;
+  line-height: 1.5;
+  margin: 8px 0 12px;
+  padding: 10px;
+  background: var(--bg);
+  border-radius: 6px;
+  border-left: 3px solid #3b82f6;
+}
+
+.signal-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.signal-list h4 {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text);
+  margin: 0 0 6px;
+}
+
+.signal-tag {
+  font-size: 13px;
+  padding: 3px 0;
+  color: var(--text-h);
+  display: flex;
+  justify-content: space-between;
+}
+
+.signal-views {
+  font-size: 11px;
+  color: var(--text);
+}
+
+.signal-recs,
+.signal-warn {
+  margin-top: 12px;
+}
+
+.signal-recs h4 {
+  font-size: 13px;
+  color: #10b981;
+  margin: 0 0 6px;
+}
+
+.signal-warn h4 {
+  font-size: 13px;
+  color: #ef4444;
+  margin: 0 0 6px;
+}
+
+.signal-recs ul,
+.signal-warn ul {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 13px;
+  line-height: 1.6;
+}
