@@ -10,6 +10,7 @@ const dropboxHandler = require('./handlers/dropbox');
 const frameioHandler = require('./handlers/frameio');
 const scheduler = require('./lib/scheduler');
 const research = require('./agents/research');
+const performance = require('./agents/performance');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -65,6 +66,8 @@ app.listen(PORT, () => {
   // Register scheduled agent jobs
   // Research Agent — daily at 6 AM
   scheduler.register('research-agent', '0 6 * * *', research.runAll);
+  // Performance Analysis Agent — every Monday at 7 AM
+  scheduler.register('performance-agent', '0 7 * * 1', performance.runAll);
 });
 
 // Catch unhandled promise rejections — log before PM2 restarts

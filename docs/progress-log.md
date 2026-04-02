@@ -206,3 +206,59 @@ QA correctly failed the test video (24 total issues). Cleanup: video deleted fro
 ### Next Steps
 - Build Performance Agent (weekly Monday AM cron)
 - Scripting Agent blocked pending Scott confirmation (see decisions.md)
+
+---
+
+## Session 2 (continued) — April 2, 2026: Performance Analysis Agent
+
+### Built — Performance Analysis Agent: Weekly Pattern Recognition
+
+**Files created/modified:**
+
+- **`agents/performance.js`** (rewritten) — Full weekly analysis pipeline:
+  1. **Data collection** — Queries `performance` table for last 4 weeks of view data per video per platform, aggregates views per video.
+  2. **Context assembly** — Identifies top/bottom performers (top/bottom 25%), fetches video titles and transcripts from `videos.script`, pulls recent `research_library` entries as external benchmarks.
+  3. **Claude analysis** — Builds a structured prompt with platform breakdown, top/bottom transcripts, and benchmark hook/format distributions. Claude returns structured JSON: `top_hooks`, `top_formats`, `top_topics`, `underperforming_patterns`, `recommendations`, `summary`.
+  4. **Validation** — Ensures Claude output matches expected shape before writing.
+  5. **Storage** — Writes to `performance_signals` with `week_of` (Monday date), structured signal arrays, plain-English summary, and full `raw_output` JSON.
+  6. **`runAll()`** — Iterates active campuses, called by Monday cron.
+  7. **Small sample handling** — When <50 videos, prompts Claude to hedge confidence in recommendations.
+- **`server.js`** (updated) — Registers Performance Agent cron: `0 7 * * 1` (every Monday at 7 AM).
+- **`scripts/test-performance-agent.js`** (new) — Full integration test with synthetic data.
+
+### Tested — Integration Test Results
+
+Seeded 8 synthetic videos (5 high-performing with strong hooks, 3 low-performing with weak content) × 2 platforms × 2 weeks = 32 performance records + 3 research_library benchmarks.
+
+| Check | Result |
+|---|---|
+| Signal written to performance_signals | **PASS** — `f66d3cd8` |
+| top_hooks | **PASS** — 2 hooks: stat (1.2M avg), story (762K avg) |
+| top_formats | **PASS** — 2 formats: talking-head, day-in-life |
+| top_topics | **PASS** — 2 topics: alpha_school_positioning, student_life_showcase |
+| summary (plain English) | **PASS** — actionable 2-sentence brief |
+| raw_output stored | **PASS** — full JSON with all fields |
+| underperforming_patterns | **PASS** — 4 patterns identified (vague updates, filler words, no hook, rambling) |
+| recommendations | **PASS** — 5 actionable items |
+
+Sample recommendation output:
+- "Lead with shocking statistics or contrarian statements about traditional education"
+- "Show don't tell — use day-in-life format to demonstrate Alpha School's unique approach"
+- "Get to the point within first 3 seconds, cut all filler words and rambling"
+- "Test more question-based hooks since they're trending externally but underrepresented in our top performers"
+
+### Agent Status Summary
+
+| Agent | Status | Trigger |
+|---|---|---|
+| Pipeline | Built — 1st trigger live (READY FOR SHOOTING → Dropbox folders) | ClickUp webhook |
+| QA | Built — all 4 checks live | EDITED status |
+| Research | Built — classification + dedup live, scraping needs APIFY_API_TOKEN | Daily 6 AM cron |
+| Performance | Built — full analysis pipeline live | Monday 7 AM cron |
+| Scripting | **Blocked** — student context approach under review with Scott | — |
+
+### Next Steps
+- Scripting Agent: awaiting Scott confirmation on student context (see decisions.md)
+- Add remaining credentials: ClickUp, Fireflies, Apify
+- Run Supabase unique index migration for research_library
+- Begin Dashboard (React localhost) or remaining Pipeline triggers
