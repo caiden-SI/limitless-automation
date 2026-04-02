@@ -119,3 +119,49 @@ Ran `scripts/verify-integrations.js` against live APIs with real credentials fro
 - Build next Pipeline trigger: Dropbox file detection → READY FOR EDITING (1-hour delay)
 - Build editor assignment logic (needs editor rows seeded in `editors` table)
 - Build Frame.io share link creation (status → DONE trigger)
+
+---
+
+## Session 2 (continued) — April 2, 2026: QA Agent
+
+### Built — QA Agent: EDITED → Quality Gate
+
+**Files created/modified:**
+
+- **`tools/srt-parser.js`** (new) — Deterministic SRT parser: `parseSRT()` returns structured cues with index, timecodes (start/end in string and ms), and text. `cuesToPlainText()` for concatenated text extraction.
+- **`lib/dropbox.js`** (updated) — Added `downloadFile(path)` (returns Buffer) and `getTemporaryLink(path)` (returns 4-hour direct URL for FFmpeg).
+- **`agents/qa.js`** (rewritten) — Full QA agent with four checks:
+  1. **Brand dictionary spell check** — Retrieves SRT from Dropbox `[PROJECT]` folder, parses it, checks every word against `brand_dictionary` table. Catches exact capitalization errors and Levenshtein distance-1 near-misses.
+  2. **Caption formatting** (Claude) — Sends cues to Claude for punctuation consistency, line length, timing overlaps, capitalization. Returns structured `FORMAT:` issues with timecodes.
+  3. **LUFS analysis** (FFmpeg) — Gets temporary Dropbox link, runs `ffmpeg -af loudnorm=print_format=json`, parses `input_i` from stderr. Target: -14 LUFS ±1 LU. Gracefully skips if FFmpeg not installed (not a blocking failure).
+  4. **Stutter/filler detection** (Claude) — Sends timestamped transcript to Claude for filler words (um, uh, like, you know, basically), stutters (repeated words), and false starts. Returns `STUTTER:` issues with timecodes and suggestions.
+- **`agents/pipeline.js`** (updated) — Added `EDITED` case in status switch, new `triggerQA()` function that runs QA and gates delivery:
+  - QA pass → video eligible for Frame.io upload
+  - QA fail → status set to NEEDS REVISIONS in Supabase (ClickUp update stubbed)
+- **`scripts/test-qa-agent.js`** (new) — End-to-end integration test
+
+**ClickUp API stubs (clearly marked TODO):**
+- Post QA report to ClickUp task comments
+- Update ClickUp status to NEEDS REVISIONS on QA failure
+
+### Tested — Integration Test Results
+Test SRT with deliberate issues: "alfa School", "Timback", lowercase brand terms, filler words, stutters, false starts.
+
+| Check | Issues Found | Status |
+|---|---|---|
+| Brand dictionary | 3 — "alfa"/Alpha near-miss, "superbuilders" capitalization, "Timback" typo | **PASS** |
+| Caption formatting | 13 — missing punctuation, capitalization, apostrophes | **PASS** |
+| Stutter/filler | 7 — "Um", "so like", "the the", "that that", "you know", false start, "basically" | **PASS** |
+| LUFS analysis | Skipped (no video file, no FFmpeg) — graceful skip, not a failure | **PASS** |
+| qa_passed → Supabase | `false` correctly written | **PASS** |
+
+QA correctly failed the test video (24 total issues). Cleanup: video deleted from Supabase, folders deleted from Dropbox.
+
+### QA Gate Behavior
+- `qa_passed = true` → video eligible for Frame.io upload (status stays, waiting for DONE)
+- `qa_passed = false` → status set to NEEDS REVISIONS, issues logged. Editor must fix and re-submit as EDITED to re-trigger QA.
+
+### Next Steps
+- Install FFmpeg on Mac Mini for LUFS checks in production
+- Add ClickUp credentials → enable QA report posting to task comments
+- Build Research Agent or remaining Pipeline triggers (Dropbox file detection, Frame.io share link)

@@ -11,6 +11,7 @@
 const { supabase } = require('../lib/supabase');
 const { log } = require('../lib/logger');
 const dropbox = require('../lib/dropbox');
+const qa = require('./qa');
 
 const AGENT_NAME = 'pipeline';
 
@@ -31,6 +32,10 @@ async function handleStatusChange(taskId, newStatus, campusId) {
 
       case 'READY FOR EDITING':
         await assignEditor(taskId, campusId);
+        break;
+
+      case 'EDITED':
+        await triggerQA(taskId, campusId);
         break;
 
       case 'DONE':
@@ -260,6 +265,50 @@ async function assignEditor(taskId, campusId) {
 }
 
 /**
+ * Trigger QA checks when an editor marks a video as EDITED.
+ * If QA passes, the video is eligible for Frame.io upload.
+ * If QA fails, issues are posted to ClickUp and status stays EDITED.
+ */
+async function triggerQA(taskId, campusId) {
+  const { video, campus } = await resolveTask(taskId, campusId);
+
+  const { passed, report } = await qa.runQA(video.id, campus.id);
+
+  if (passed) {
+    await log({
+      campusId: campus.id,
+      agent: AGENT_NAME,
+      action: 'qa_gate_passed',
+      payload: { taskId, videoId: video.id },
+    });
+    // QA passed — video is now eligible for Frame.io upload.
+    // The actual upload happens when status moves to DONE.
+  } else {
+    // TODO: Update ClickUp status to NEEDS REVISIONS once CLICKUP_API_KEY is available
+    // await fetch(`https://api.clickup.com/api/v2/task/${taskId}`, {
+    //   method: 'PUT',
+    //   headers: { Authorization: process.env.CLICKUP_API_KEY, 'Content-Type': 'application/json' },
+    //   body: JSON.stringify({ status: 'NEEDS REVISIONS' }),
+    // });
+
+    // Update status in Supabase to reflect the block
+    await supabase
+      .from('videos')
+      .update({ status: 'NEEDS REVISIONS', updated_at: new Date().toISOString() })
+      .eq('id', video.id);
+
+    await log({
+      campusId: campus.id,
+      agent: AGENT_NAME,
+      action: 'qa_gate_blocked',
+      payload: { taskId, videoId: video.id, issueCount: report.totalIssues },
+    });
+  }
+
+  return { passed, report };
+}
+
+/**
  * Create Frame.io share link and update ClickUp custom field.
  */
 async function createShareLink(taskId, campusId) {
@@ -332,5 +381,6 @@ module.exports = {
   handleFootageDetected,
   createDropboxFolders,
   assignEditor,
+  triggerQA,
   createShareLink,
 };
