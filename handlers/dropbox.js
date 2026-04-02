@@ -8,20 +8,25 @@ const { log } = require('../lib/logger');
 
 /**
  * Verify Dropbox webhook signature.
+ * Dropbox signs webhooks with HMAC-SHA256(app_secret, rawBody) sent in X-Dropbox-Signature as hex.
  * @param {Buffer} rawBody - Raw request body
  * @param {string} signature - X-Dropbox-Signature header value
  * @returns {boolean}
  */
 function verifySignature(rawBody, signature) {
   const appSecret = process.env.DROPBOX_APP_SECRET;
-  if (!appSecret || !signature) return false;
+  if (!appSecret || !signature || !rawBody) return false;
 
   const expected = crypto
     .createHmac('sha256', appSecret)
     .update(rawBody)
     .digest('hex');
 
-  return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(signature));
+  const expectedBuf = Buffer.from(expected, 'utf8');
+  const signatureBuf = Buffer.from(signature, 'utf8');
+  if (expectedBuf.length !== signatureBuf.length) return false;
+
+  return crypto.timingSafeEqual(expectedBuf, signatureBuf);
 }
 
 async function handler(req, res) {

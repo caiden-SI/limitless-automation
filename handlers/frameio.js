@@ -8,20 +8,26 @@ const { log } = require('../lib/logger');
 
 /**
  * Verify Frame.io webhook signature.
+ * Frame.io v4 signs webhooks with HMAC-SHA256(secret, rawBody) sent in X-Frameio-Signature as hex.
+ * NOTE: Adobe acquired Frame.io — verify header name if v4 API behavior changes.
  * @param {Buffer} rawBody - Raw request body
  * @param {string} signature - X-Frameio-Signature header value
  * @returns {boolean}
  */
 function verifySignature(rawBody, signature) {
   const secret = process.env.FRAMEIO_WEBHOOK_SECRET;
-  if (!secret || !signature) return false;
+  if (!secret || !signature || !rawBody) return false;
 
   const expected = crypto
     .createHmac('sha256', secret)
     .update(rawBody)
     .digest('hex');
 
-  return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(signature));
+  const expectedBuf = Buffer.from(expected, 'utf8');
+  const signatureBuf = Buffer.from(signature, 'utf8');
+  if (expectedBuf.length !== signatureBuf.length) return false;
+
+  return crypto.timingSafeEqual(expectedBuf, signatureBuf);
 }
 
 async function handler(req, res) {

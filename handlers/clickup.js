@@ -6,20 +6,26 @@ const { log } = require('../lib/logger');
 
 /**
  * Verify ClickUp webhook signature.
+ * ClickUp signs webhooks with HMAC-SHA256(secret, rawBody) sent in X-Signature as hex.
  * @param {Buffer} rawBody - Raw request body
  * @param {string} signature - X-Signature header value
  * @returns {boolean}
  */
 function verifySignature(rawBody, signature) {
   const secret = process.env.CLICKUP_WEBHOOK_SECRET;
-  if (!secret || !signature) return false;
+  if (!secret || !signature || !rawBody) return false;
 
   const expected = crypto
     .createHmac('sha256', secret)
     .update(rawBody)
     .digest('hex');
 
-  return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(signature));
+  // timingSafeEqual throws on length mismatch — guard against malformed signatures
+  const expectedBuf = Buffer.from(expected, 'utf8');
+  const signatureBuf = Buffer.from(signature, 'utf8');
+  if (expectedBuf.length !== signatureBuf.length) return false;
+
+  return crypto.timingSafeEqual(expectedBuf, signatureBuf);
 }
 
 async function handler(req, res) {
