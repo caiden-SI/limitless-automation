@@ -34,7 +34,7 @@ async function handleStatusChange(taskId, newStatus, campusId) {
         await assignEditor(taskId, campusId);
         break;
 
-      case 'uploaded to dropbox':
+      case 'edited':
         await triggerQA(taskId, campusId);
         break;
 
@@ -265,7 +265,7 @@ async function assignEditor(taskId, campusId) {
 }
 
 /**
- * Trigger QA checks when an editor marks a video as uploaded to dropbox.
+ * Trigger QA checks when an editor marks a video as edited.
  * If QA passes, the video is eligible for Frame.io upload.
  * If QA fails, issues are posted to ClickUp and status set to waiting.
  */

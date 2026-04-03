@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Integration test — QA Agent: uploaded to dropbox → run all QA checks.
+ * Integration test — QA Agent: edited → run all QA checks.
  *
  * This test:
  * 1. Creates Dropbox folders + uploads a test SRT with deliberate issues
@@ -94,7 +94,7 @@ async function run() {
         campus_id: CAMPUS_ID,
         clickup_task_id: 'test_qa_' + Date.now(),
         title: TEST_TITLE,
-        status: 'uploaded to dropbox',
+        status: 'edited',
         dropbox_folder: DROPBOX_BASE,
       })
       .select('*')

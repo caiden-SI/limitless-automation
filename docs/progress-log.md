@@ -124,7 +124,7 @@ Ran `scripts/verify-integrations.js` against live APIs with real credentials fro
 
 ## Session 2 (continued) — April 2, 2026: QA Agent
 
-### Built — QA Agent: uploaded to dropbox → Quality Gate
+### Built — QA Agent: edited → Quality Gate
 
 **Files created/modified:**
 
@@ -135,7 +135,7 @@ Ran `scripts/verify-integrations.js` against live APIs with real credentials fro
   2. **Caption formatting** (Claude) — Sends cues to Claude for punctuation consistency, line length, timing overlaps, capitalization. Returns structured `FORMAT:` issues with timecodes.
   3. **LUFS analysis** (FFmpeg) — Gets temporary Dropbox link, runs `ffmpeg -af loudnorm=print_format=json`, parses `input_i` from stderr. Target: -14 LUFS ±1 LU. Gracefully skips if FFmpeg not installed (not a blocking failure).
   4. **Stutter/filler detection** (Claude) — Sends timestamped transcript to Claude for filler words (um, uh, like, you know, basically), stutters (repeated words), and false starts. Returns `STUTTER:` issues with timecodes and suggestions.
-- **`agents/pipeline.js`** (updated) — Added `uploaded to dropbox` case in status switch, new `triggerQA()` function that runs QA and gates delivery:
+- **`agents/pipeline.js`** (updated) — Added `edited` case in status switch, new `triggerQA()` function that runs QA and gates delivery:
   - QA pass → video eligible for Frame.io upload
   - QA fail → status set to waiting in Supabase (ClickUp update stubbed)
 - **`scripts/test-qa-agent.js`** (new) — End-to-end integration test
@@ -159,7 +159,7 @@ QA correctly failed the test video (24 total issues). Cleanup: video deleted fro
 
 ### QA Gate Behavior
 - `qa_passed = true` → video eligible for Frame.io upload (status stays, waiting for done)
-- `qa_passed = false` → status set to waiting, issues logged. Editor must fix and re-submit as uploaded to dropbox to re-trigger QA.
+- `qa_passed = false` → status set to waiting, issues logged. Editor must fix and re-submit as edited to re-trigger QA.
 
 ### Next Steps
 - Install FFmpeg on Mac Mini for LUFS checks in production
@@ -252,7 +252,7 @@ Sample recommendation output:
 | Agent | Status | Trigger |
 |---|---|---|
 | Pipeline | Built — 1st trigger live (ready for shooting → Dropbox folders) | ClickUp webhook |
-| QA | Built — all 4 checks live | uploaded to dropbox status |
+| QA | Built — all 4 checks live | edited status |
 | Research | Built — classification + dedup live, scraping needs APIFY_API_TOKEN | Daily 6 AM cron |
 | Performance | Built — full analysis pipeline live | Monday 7 AM cron |
 | Scripting | **Blocked** — student context approach under review with Scott | — |
@@ -279,7 +279,7 @@ Scaffolded with Vite + React. Connects to Supabase with **anon key only** (no se
   - `src/App.jsx` — Tab navigation + campus selector
   - `src/components/PipelineView.jsx` — Kanban-style board with 9 status columns (idea → done), color-coded, QA badges, time-ago timestamps
   - `src/components/AgentActivityFeed.jsx` — Real-time log feed, color-coded agent badges, error highlighting
-  - `src/components/QAQueue.jsx` — Two sections: "Awaiting QA" (status=uploaded to dropbox, qa_passed=null) and "QA Failed / Waiting"
+  - `src/components/QAQueue.jsx` — Two sections: "Awaiting QA" (status=edited, qa_passed=null) and "QA Failed / Waiting"
   - `src/components/EditorCapacity.jsx` — Card grid per editor with active task count, capacity bar (green/yellow/red)
   - `src/components/PerformanceSignals.jsx` — Weekly signal cards with summary, top hooks/formats/topics, recommendations, underperforming patterns
   - `src/index.css` — Base styles, dark mode support

@@ -1,5 +1,5 @@
 // QA Agent — LLM-powered quality gate before Frame.io delivery.
-// Trigger: ClickUp task status changes to "uploaded to dropbox".
+// Trigger: ClickUp task status changes to "edited".
 //
 // Checks:
 //   1. Caption spell check against brand_dictionary

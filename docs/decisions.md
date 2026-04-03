@@ -196,13 +196,14 @@ A 200 response with account data confirms v4 is working.
 | READY FOR SHOOTING | ready for shooting |
 | READY FOR EDITING | ready for editing |
 | IN EDITING | in editing |
-| EDITED | uploaded to dropbox |
+| EDITED | edited |
+| _(n/a)_ | uploaded to dropbox |
 | NEEDS REVISIONS | waiting |
 | DONE | done |
 | _(new)_ | sent to client |
 | _(new)_ | posted by client |
 
-Key semantic changes: "EDITED" is now "uploaded to dropbox" (reflects the actual action), and "NEEDS REVISIONS" is now "waiting" (generic hold state). Two new statuses added: "sent to client" and "posted by client".
+Key semantic changes: "EDITED" maps to "edited" (lowercase, same meaning — QA trigger). "NEEDS REVISIONS" is now "waiting" (generic hold state). "uploaded to dropbox" is a new status distinct from "edited". Two additional new statuses: "sent to client" and "posted by client".
 
 **Files updated:** CLAUDE.md, agents/pipeline.js, agents/qa.js, agents/scripting.js, handlers/frameio.js, dashboard/src/components/PipelineView.jsx, dashboard/src/components/QAQueue.jsx, dashboard/src/lib/hooks.js, scripts/test-pipeline-folders.js, scripts/test-qa-agent.js, scripts/test-performance-agent.js, docs/architecture.md, docs/build-order.md, docs/integrations.md, docs/decisions.md.
 
@@ -225,3 +226,13 @@ Key semantic changes: "EDITED" is now "uploaded to dropbox" (reflects the actual
 Both set to `active = true`, `campus_id` = Austin campus UUID (`0ba4268f-f010-43c5-906c-41509bc9612f`).
 
 **Status:** Done — seed script created at `scripts/seed-editors.js`.
+
+---
+
+### 2026-04-03 | QA trigger status corrected to "edited"
+
+**Decision:** The QA Agent trigger status is "edited", not "uploaded to dropbox". These are two separate statuses in ClickUp.
+
+**Rationale:** The initial status migration incorrectly mapped the old "EDITED" status to "uploaded to dropbox". Scott confirmed the actual QA trigger is "edited" (lowercase) — a separate status. "uploaded to dropbox" exists in the pipeline but does not trigger QA. The full status list is now: idea, ready for shooting, ready for editing, in editing, edited, uploaded to dropbox, sent to client, posted by client, done, waiting.
+
+**Status:** Done.

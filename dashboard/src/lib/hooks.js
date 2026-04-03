@@ -63,7 +63,7 @@ export function useAgentLogs(campusId, limit = 50) {
 export function useQAQueue(campusId) {
   return useSupabaseQuery('qa_queue', (sb) => {
     let q = sb.from('videos').select('*')
-      .in('status', ['uploaded to dropbox', 'waiting'])
+      .in('status', ['edited', 'waiting'])
       .order('updated_at', { ascending: false });
     if (campusId) q = q.eq('campus_id', campusId);
     return q;

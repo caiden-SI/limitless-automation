@@ -31,10 +31,21 @@ async function run() {
   console.log('Seeding editors for Austin campus...\n');
 
   for (const editor of EDITORS) {
-    // Upsert by email to avoid duplicates on re-run
+    // Check if editor already exists by email
+    const { data: existing } = await supabase
+      .from('editors')
+      .select('id, name, email')
+      .eq('email', editor.email)
+      .maybeSingle();
+
+    if (existing) {
+      console.log(`  SKIP: ${existing.name} (${existing.email}) — already exists (id: ${existing.id})`);
+      continue;
+    }
+
     const { data, error } = await supabase
       .from('editors')
-      .upsert(editor, { onConflict: 'email' })
+      .insert(editor)
       .select('id, name, email')
       .single();
 

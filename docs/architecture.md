@@ -55,7 +55,7 @@ All webhooks verify signatures before processing.
 | Agent              | Type          | Trigger                                  | Key Action                                      |
 |--------------------|---------------|------------------------------------------|--------------------------------------------------|
 | Pipeline Agent     | Automation    | ClickUp/Dropbox webhooks                 | Status changes, folder creation, editor assignment |
-| QA Agent           | LLM-powered   | Status → uploaded to dropbox             | Caption check, LUFS check, stutter detection      |
+| QA Agent           | LLM-powered   | Status → edited                          | Caption check, LUFS check, stutter detection      |
 | Research Agent     | LLM + scraper | Daily/weekly cron                        | Scrape trending content, classify, store           |
 | Performance Agent  | LLM-powered   | Weekly (Monday AM)                       | Pattern analysis on view data + transcripts        |
 | Scripting Agent    | LLM-powered   | Google Calendar (student filming event)  | Generate 3 concepts per student                    |
@@ -75,7 +75,7 @@ All webhooks verify signatures before processing.
 8. Pipeline Agent assigns editor by lowest active task count
 
 ### Post-Production (Phase 1: QA + Delivery only)
-9. Editor completes work, sets status → "uploaded to dropbox" [MANUAL]
+9. Editor completes work, sets status → "edited" [MANUAL]
 10. QA Agent runs checks (captions, LUFS, stutter)
 11. Pass → Pipeline Agent uploads to Frame.io, updates ClickUp
 12. Fail → QA Agent posts issues to ClickUp comments
