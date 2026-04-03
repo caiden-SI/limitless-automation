@@ -1,5 +1,5 @@
 // Frame.io webhook handler — receives comment and asset events.
-// Comments on a review asset trigger Pipeline Agent to set NEEDS REVISIONS in ClickUp.
+// Comments on a review asset trigger Pipeline Agent to set waiting in ClickUp.
 // NOTE: Frame.io was acquired by Adobe — v4 API is current. Verify comment webhook
 // behavior before building QA trigger.
 
@@ -51,7 +51,7 @@ async function handler(req, res) {
     switch (type) {
       case 'comment.created': {
         // TODO: Look up video by Frame.io asset ID in Supabase
-        // If found, route to Pipeline Agent to set NEEDS REVISIONS in ClickUp
+        // If found, route to Pipeline Agent to set waiting in ClickUp
         break;
       }
 

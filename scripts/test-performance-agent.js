@@ -37,7 +37,7 @@ async function run() {
     for (const tv of TEST_VIDEOS) {
       const { data, error } = await supabase
         .from('videos')
-        .insert({ campus_id: CAMPUS_ID, title: tv.title, script: tv.script, status: 'DONE' })
+        .insert({ campus_id: CAMPUS_ID, title: tv.title, script: tv.script, status: 'done' })
         .select('id')
         .single();
       if (error) throw new Error(`Video insert failed: ${error.message}`);

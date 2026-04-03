@@ -1,23 +1,27 @@
 import { useVideos } from '../lib/hooks';
 
 const STATUS_ORDER = [
-  'IDEA',
-  'READY FOR SHOOTING',
-  'READY FOR EDITING',
-  'IN EDITING',
-  'EDITED',
-  'NEEDS REVISIONS',
-  'DONE',
+  'idea',
+  'ready for shooting',
+  'ready for editing',
+  'in editing',
+  'uploaded to dropbox',
+  'sent to client',
+  'posted by client',
+  'done',
+  'waiting',
 ];
 
 const STATUS_COLORS = {
-  'IDEA': '#6b7280',
-  'READY FOR SHOOTING': '#f59e0b',
-  'READY FOR EDITING': '#3b82f6',
-  'IN EDITING': '#8b5cf6',
-  'EDITED': '#06b6d4',
-  'NEEDS REVISIONS': '#ef4444',
-  'DONE': '#10b981',
+  'idea': '#6b7280',
+  'ready for shooting': '#f59e0b',
+  'ready for editing': '#3b82f6',
+  'in editing': '#8b5cf6',
+  'uploaded to dropbox': '#06b6d4',
+  'sent to client': '#a855f7',
+  'posted by client': '#f97316',
+  'done': '#10b981',
+  'waiting': '#ef4444',
 };
 
 export default function PipelineView({ campusId }) {
@@ -30,7 +34,7 @@ export default function PipelineView({ campusId }) {
   const columns = {};
   for (const s of STATUS_ORDER) columns[s] = [];
   for (const v of videos || []) {
-    const col = columns[v.status] || (columns['IDEA']);
+    const col = columns[v.status] || (columns['idea']);
     col.push(v);
   }
 

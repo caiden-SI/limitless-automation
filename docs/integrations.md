@@ -43,7 +43,7 @@ All accounts owned by Limitless Media Agency LLC.
 - `POST /files/list_folder/longpoll` — or webhook for file changes
 
 **Webhook events to listen for:**
-- File added to `[FOOTAGE]` subfolder → trigger status change to READY FOR EDITING
+- File added to `[FOOTAGE]` subfolder → trigger status change to ready for editing
 
 **Auth:** App Key + App Secret (OAuth 2.0 flow or long-lived token)
 **Credential location:** 1Password → "Dropbox App Key" + "Dropbox App Secret"
@@ -73,7 +73,7 @@ All accounts owned by Limitless Media Agency LLC.
 - `POST /assets/{asset_id}/share_links` — create client share link
 
 **Webhook events to listen for:**
-- Comment created on asset → trigger NEEDS REVISIONS status change in ClickUp
+- Comment created on asset → trigger "waiting" status change in ClickUp
 
 **Auth:** API token (generated from developer.frame.io)
 **Credential location:** 1Password → "Frame.io API Token"

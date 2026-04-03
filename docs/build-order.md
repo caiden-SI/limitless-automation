@@ -43,11 +43,11 @@ Target delivery: April 25, 2026
 ## Week 2–3: Agents
 
 ### Pipeline Agent
-- [ ] Implement Dropbox folder creation (trigger: status → READY FOR SHOOTING)
+- [ ] Implement Dropbox folder creation (trigger: status → ready for shooting)
 - [ ] Implement Dropbox file detection (trigger: file count 0 → >0, with 1-hour delay)
-- [ ] Implement status change READY FOR SHOOTING → READY FOR EDITING
+- [ ] Implement status change ready for shooting → ready for editing
 - [ ] Implement editor assignment by lowest active task count
-- [ ] Implement Frame.io share link creation (trigger: status → DONE)
+- [ ] Implement Frame.io share link creation (trigger: status → done)
 - [ ] Implement ClickUp custom field update with Frame.io link
 - [ ] Write all actions to `videos` table and `agent_logs`
 - [ ] End-to-end test: create task → folder → simulate upload → verify status flow
@@ -86,7 +86,7 @@ Target delivery: April 25, 2026
 - [ ] Implement performance signals retrieval
 - [ ] Implement research library retrieval
 - [ ] Implement Claude script generation (3 concepts per student)
-- [ ] Implement ClickUp task creation in IDEA status
+- [ ] Implement ClickUp task creation in "idea" status
 - [ ] Write drafts to `videos` table
 - [ ] Test with sample student profile
 

@@ -7,7 +7,7 @@
 //   3. Query performance_signals for latest weekly signals
 //   4. Query research_library for top recent entries matching niche
 //   5. Generate 3 concept options via Claude (title, hook, script, format)
-//   6. Create ClickUp tasks in IDEA status
+//   6. Create ClickUp tasks in "idea" status
 //   7. Write drafts to videos table
 //
 // NOTE: Google Calendar event format needs confirmation from Scott —
@@ -56,8 +56,8 @@ async function run(studentName, campusId) {
     // 4. Build prompt from SCRIPTING_SYSTEM template with real data
     // 5. Call Claude for 3 concept options
     // 6. For each concept:
-    //    a. Create ClickUp task in IDEA status
-    //    b. Insert into videos table with status IDEA
+    //    a. Create ClickUp task in "idea" status
+    //    b. Insert into videos table with status "idea"
 
     await log({ campusId, agent: AGENT_NAME, action: 'scripting_run_complete', payload: { studentName } });
   } catch (err) {

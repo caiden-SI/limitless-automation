@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Integration test — Pipeline Agent: READY FOR SHOOTING → create Dropbox folders.
+ * Integration test — Pipeline Agent: ready for shooting → create Dropbox folders.
  *
  * This test:
  * 1. Inserts a test video row into Supabase
@@ -33,7 +33,7 @@ async function run() {
         campus_id: CAMPUS_ID,
         clickup_task_id: TEST_TASK_ID,
         title: TEST_TITLE,
-        status: 'READY FOR SHOOTING',
+        status: 'ready for shooting',
       })
       .select('*')
       .single();

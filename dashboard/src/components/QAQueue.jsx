@@ -6,8 +6,8 @@ export default function QAQueue({ campusId }) {
   if (loading) return <div className="loading">Loading QA queue...</div>;
   if (error) return <div className="error">Error: {error}</div>;
 
-  const needsQA = (videos || []).filter((v) => v.qa_passed === null && v.status === 'EDITED');
-  const failed = (videos || []).filter((v) => v.qa_passed === false || v.status === 'NEEDS REVISIONS');
+  const needsQA = (videos || []).filter((v) => v.qa_passed === null && v.status === 'uploaded to dropbox');
+  const failed = (videos || []).filter((v) => v.qa_passed === false || v.status === 'waiting');
 
   return (
     <div className="panel">
@@ -27,7 +27,7 @@ export default function QAQueue({ campusId }) {
       </div>
 
       <div className="qa-section">
-        <h3>QA Failed / Needs Revisions <span className="count count--fail">{failed.length}</span></h3>
+        <h3>QA Failed / Waiting <span className="count count--fail">{failed.length}</span></h3>
         {failed.length === 0 && <div className="card-empty">No failed videos</div>}
         {failed.map((v) => (
           <div key={v.id} className="card card--fail">

@@ -85,7 +85,7 @@ Ran `scripts/verify-integrations.js` against live APIs with real credentials fro
 
 ## Session 2 (continued) — April 2, 2026
 
-### Built — Pipeline Agent: READY FOR SHOOTING → Dropbox Folder Creation
+### Built — Pipeline Agent: ready for shooting → Dropbox Folder Creation
 
 **Files created/modified:**
 
@@ -95,7 +95,7 @@ Ran `scripts/verify-integrations.js` against live APIs with real credentials fro
   - `resolveTask()` — looks up video by `clickup_task_id` in Supabase, creates the row if missing (using ClickUp API stub)
   - `createDropboxFolders()` — creates `/{campus-slug}/{title}/[FOOTAGE]/` and `/[PROJECT]/` in Dropbox, updates `videos.dropbox_folder` in Supabase
   - `assignEditor()` — queries editors by campus, picks lowest active count, updates Supabase (ClickUp assignee update stubbed)
-  - `handleFootageDetected()` — verifies files in `[FOOTAGE]` via Dropbox API, updates status to READY FOR EDITING in Supabase (ClickUp status update stubbed)
+  - `handleFootageDetected()` — verifies files in `[FOOTAGE]` via Dropbox API, updates status to ready for editing in Supabase (ClickUp status update stubbed)
 - **`handlers/clickup.js`** (updated) — Routes `taskStatusUpdated` events to `pipeline.handleStatusChange()`. Signature verification conditional on `CLICKUP_WEBHOOK_SECRET` being set.
 - **`scripts/test-pipeline-folders.js`** (new) — End-to-end integration test
 
@@ -116,15 +116,15 @@ Ran `scripts/verify-integrations.js` against live APIs with real credentials fro
 
 ### Next Steps
 - Add ClickUp credentials to `.env` and replace all TODO stubs
-- Build next Pipeline trigger: Dropbox file detection → READY FOR EDITING (1-hour delay)
+- Build next Pipeline trigger: Dropbox file detection → ready for editing (1-hour delay)
 - Build editor assignment logic (needs editor rows seeded in `editors` table)
-- Build Frame.io share link creation (status → DONE trigger)
+- Build Frame.io share link creation (status → done trigger)
 
 ---
 
 ## Session 2 (continued) — April 2, 2026: QA Agent
 
-### Built — QA Agent: EDITED → Quality Gate
+### Built — QA Agent: uploaded to dropbox → Quality Gate
 
 **Files created/modified:**
 
@@ -135,14 +135,14 @@ Ran `scripts/verify-integrations.js` against live APIs with real credentials fro
   2. **Caption formatting** (Claude) — Sends cues to Claude for punctuation consistency, line length, timing overlaps, capitalization. Returns structured `FORMAT:` issues with timecodes.
   3. **LUFS analysis** (FFmpeg) — Gets temporary Dropbox link, runs `ffmpeg -af loudnorm=print_format=json`, parses `input_i` from stderr. Target: -14 LUFS ±1 LU. Gracefully skips if FFmpeg not installed (not a blocking failure).
   4. **Stutter/filler detection** (Claude) — Sends timestamped transcript to Claude for filler words (um, uh, like, you know, basically), stutters (repeated words), and false starts. Returns `STUTTER:` issues with timecodes and suggestions.
-- **`agents/pipeline.js`** (updated) — Added `EDITED` case in status switch, new `triggerQA()` function that runs QA and gates delivery:
+- **`agents/pipeline.js`** (updated) — Added `uploaded to dropbox` case in status switch, new `triggerQA()` function that runs QA and gates delivery:
   - QA pass → video eligible for Frame.io upload
-  - QA fail → status set to NEEDS REVISIONS in Supabase (ClickUp update stubbed)
+  - QA fail → status set to waiting in Supabase (ClickUp update stubbed)
 - **`scripts/test-qa-agent.js`** (new) — End-to-end integration test
 
 **ClickUp API stubs (clearly marked TODO):**
 - Post QA report to ClickUp task comments
-- Update ClickUp status to NEEDS REVISIONS on QA failure
+- Update ClickUp status to waiting on QA failure
 
 ### Tested — Integration Test Results
 Test SRT with deliberate issues: "alfa School", "Timback", lowercase brand terms, filler words, stutters, false starts.
@@ -158,8 +158,8 @@ Test SRT with deliberate issues: "alfa School", "Timback", lowercase brand terms
 QA correctly failed the test video (24 total issues). Cleanup: video deleted from Supabase, folders deleted from Dropbox.
 
 ### QA Gate Behavior
-- `qa_passed = true` → video eligible for Frame.io upload (status stays, waiting for DONE)
-- `qa_passed = false` → status set to NEEDS REVISIONS, issues logged. Editor must fix and re-submit as EDITED to re-trigger QA.
+- `qa_passed = true` → video eligible for Frame.io upload (status stays, waiting for done)
+- `qa_passed = false` → status set to waiting, issues logged. Editor must fix and re-submit as uploaded to dropbox to re-trigger QA.
 
 ### Next Steps
 - Install FFmpeg on Mac Mini for LUFS checks in production
@@ -251,8 +251,8 @@ Sample recommendation output:
 
 | Agent | Status | Trigger |
 |---|---|---|
-| Pipeline | Built — 1st trigger live (READY FOR SHOOTING → Dropbox folders) | ClickUp webhook |
-| QA | Built — all 4 checks live | EDITED status |
+| Pipeline | Built — 1st trigger live (ready for shooting → Dropbox folders) | ClickUp webhook |
+| QA | Built — all 4 checks live | uploaded to dropbox status |
 | Research | Built — classification + dedup live, scraping needs APIFY_API_TOKEN | Daily 6 AM cron |
 | Performance | Built — full analysis pipeline live | Monday 7 AM cron |
 | Scripting | **Blocked** — student context approach under review with Scott | — |
@@ -277,9 +277,9 @@ Scaffolded with Vite + React. Connects to Supabase with **anon key only** (no se
   - `src/lib/supabase.js` — Supabase client using `VITE_SUPABASE_ANON_KEY`
   - `src/lib/hooks.js` — Custom hooks for all data fetching: `useCampuses`, `useVideos`, `useAgentLogs`, `useQAQueue`, `useEditors`, `useEditorCounts`, `usePerformanceSignals`. All auto-refresh on intervals (10–60s).
   - `src/App.jsx` — Tab navigation + campus selector
-  - `src/components/PipelineView.jsx` — Kanban-style board with 7 status columns (IDEA → DONE), color-coded, QA badges, time-ago timestamps
+  - `src/components/PipelineView.jsx` — Kanban-style board with 9 status columns (idea → done), color-coded, QA badges, time-ago timestamps
   - `src/components/AgentActivityFeed.jsx` — Real-time log feed, color-coded agent badges, error highlighting
-  - `src/components/QAQueue.jsx` — Two sections: "Awaiting QA" (status=EDITED, qa_passed=null) and "QA Failed / Needs Revisions"
+  - `src/components/QAQueue.jsx` — Two sections: "Awaiting QA" (status=uploaded to dropbox, qa_passed=null) and "QA Failed / Waiting"
   - `src/components/EditorCapacity.jsx` — Card grid per editor with active task count, capacity bar (green/yellow/red)
   - `src/components/PerformanceSignals.jsx` — Weekly signal cards with summary, top hooks/formats/topics, recommendations, underperforming patterns
   - `src/index.css` — Base styles, dark mode support

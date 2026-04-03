@@ -63,7 +63,7 @@ export function useAgentLogs(campusId, limit = 50) {
 export function useQAQueue(campusId) {
   return useSupabaseQuery('qa_queue', (sb) => {
     let q = sb.from('videos').select('*')
-      .in('status', ['EDITED', 'NEEDS REVISIONS'])
+      .in('status', ['uploaded to dropbox', 'waiting'])
       .order('updated_at', { ascending: false });
     if (campusId) q = q.eq('campus_id', campusId);
     return q;
@@ -83,7 +83,7 @@ export function useEditors(campusId) {
 export function useEditorCounts(campusId) {
   return useSupabaseQuery('editor_counts', (sb) => {
     let q = sb.from('videos').select('assignee_id, status')
-      .eq('status', 'IN EDITING');
+      .eq('status', 'in editing');
     if (campusId) q = q.eq('campus_id', campusId);
     return q;
   }, 15000);

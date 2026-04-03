@@ -56,7 +56,7 @@ Format: Date | Decision | Rationale | Status
 
 ### 2026-04-01 | Dropbox file detection uses 1-hour delay
 
-**Decision:** After detecting new files in a Dropbox footage folder, wait 1 hour before triggering status change to READY FOR EDITING.
+**Decision:** After detecting new files in a Dropbox footage folder, wait 1 hour before triggering status change to "ready for editing".
 
 **Rationale:** integrations.md recommends 1-hour delay to allow full Dropbox sync across all team members' machines. Triggering immediately could assign an editor before footage is available locally.
 
@@ -181,3 +181,47 @@ A 200 response with account data confirms v4 is working.
 3. Preferred collection method going forward
 
 **Status:** Blocked — awaiting Scott's input. Research Agent and Performance Agent are unblocked and proceed on schedule.
+
+---
+
+### 2026-04-03 | ClickUp status names corrected — lowercase, different names
+
+**Decision:** Update all ClickUp status references across the entire codebase to match the real ClickUp workspace statuses confirmed by Scott.
+
+**Rationale:** The original status names were uppercase guesses (IDEA, READY FOR SHOOTING, READY FOR EDITING, IN EDITING, EDITED, NEEDS REVISIONS, DONE). Scott confirmed the real statuses are lowercase and use different names in some cases. The correct mapping is:
+
+| Old (incorrect) | New (correct) |
+|---|---|
+| IDEA | idea |
+| READY FOR SHOOTING | ready for shooting |
+| READY FOR EDITING | ready for editing |
+| IN EDITING | in editing |
+| EDITED | uploaded to dropbox |
+| NEEDS REVISIONS | waiting |
+| DONE | done |
+| _(new)_ | sent to client |
+| _(new)_ | posted by client |
+
+Key semantic changes: "EDITED" is now "uploaded to dropbox" (reflects the actual action), and "NEEDS REVISIONS" is now "waiting" (generic hold state). Two new statuses added: "sent to client" and "posted by client".
+
+**Files updated:** CLAUDE.md, agents/pipeline.js, agents/qa.js, agents/scripting.js, handlers/frameio.js, dashboard/src/components/PipelineView.jsx, dashboard/src/components/QAQueue.jsx, dashboard/src/lib/hooks.js, scripts/test-pipeline-folders.js, scripts/test-qa-agent.js, scripts/test-performance-agent.js, docs/architecture.md, docs/build-order.md, docs/integrations.md, docs/decisions.md.
+
+**Status:** Done.
+
+---
+
+### 2026-04-03 | Editors table seeded for Austin campus
+
+**Decision:** Seed the `editors` table with the two active editors for the Austin campus.
+
+**Rationale:** Scott confirmed the editor roster during the April 3 meeting. The Pipeline Agent's `assignEditor()` function requires editor rows to assign work by lowest active task count. Without seeded editors, the agent logs a warning and skips assignment.
+
+**Editors seeded:**
+| Name | ClickUp User ID | Email |
+|---|---|---|
+| Charles Williams | 95229910 | charles@limitlessyt.com |
+| Tipra | 95272148 | arpitv.tip@gmail.com |
+
+Both set to `active = true`, `campus_id` = Austin campus UUID (`0ba4268f-f010-43c5-906c-41509bc9612f`).
+
+**Status:** Done — seed script created at `scripts/seed-editors.js`.

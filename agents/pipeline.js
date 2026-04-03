@@ -2,11 +2,11 @@
 // Trigger: Webhooks from ClickUp and Dropbox.
 //
 // Trigger → Action Map:
-//   Status → READY FOR SHOOTING  →  Create Dropbox folders
-//   Dropbox file count 0 → >0    →  Status → READY FOR EDITING (1hr delay)
-//   Status → READY FOR EDITING   →  Assign editor by lowest active task count
-//   Frame.io comments > 0        →  Status → NEEDS REVISIONS
-//   Status → DONE                →  Create Frame.io share link, update ClickUp
+//   Status → ready for shooting  →  Create Dropbox folders
+//   Dropbox file count 0 → >0    →  Status → ready for editing (1hr delay)
+//   Status → ready for editing   →  Assign editor by lowest active task count
+//   Frame.io comments > 0        →  Status → waiting
+//   Status → done                →  Create Frame.io share link, update ClickUp
 
 const { supabase } = require('../lib/supabase');
 const { log } = require('../lib/logger');
@@ -26,19 +26,19 @@ async function handleStatusChange(taskId, newStatus, campusId) {
     await log({ campusId, agent: AGENT_NAME, action: `status_change: ${newStatus}`, payload: { taskId } });
 
     switch (newStatus) {
-      case 'READY FOR SHOOTING':
+      case 'ready for shooting':
         await createDropboxFolders(taskId, campusId);
         break;
 
-      case 'READY FOR EDITING':
+      case 'ready for editing':
         await assignEditor(taskId, campusId);
         break;
 
-      case 'EDITED':
+      case 'uploaded to dropbox':
         await triggerQA(taskId, campusId);
         break;
 
-      case 'DONE':
+      case 'done':
         await createShareLink(taskId, campusId);
         break;
 
@@ -120,7 +120,7 @@ async function resolveTask(taskId, campusId) {
       clickup_task_id: taskId,
       title: taskData.name,
       student_name: taskData.studentName || null,
-      status: 'READY FOR SHOOTING',
+      status: 'ready for shooting',
     })
     .select('*')
     .single();
@@ -200,7 +200,7 @@ async function createDropboxFolders(taskId, campusId) {
 }
 
 /**
- * Assign editor with fewest active (IN EDITING) tasks.
+ * Assign editor with fewest active (in editing) tasks.
  */
 async function assignEditor(taskId, campusId) {
   const { video, campus } = await resolveTask(taskId, campusId);
@@ -231,7 +231,7 @@ async function assignEditor(taskId, campusId) {
         .from('videos')
         .select('*', { count: 'exact', head: true })
         .eq('assignee_id', editor.id)
-        .eq('status', 'IN EDITING');
+        .eq('status', 'in editing');
       return { editor, count: error ? Infinity : count };
     })
   );
@@ -265,9 +265,9 @@ async function assignEditor(taskId, campusId) {
 }
 
 /**
- * Trigger QA checks when an editor marks a video as EDITED.
+ * Trigger QA checks when an editor marks a video as uploaded to dropbox.
  * If QA passes, the video is eligible for Frame.io upload.
- * If QA fails, issues are posted to ClickUp and status stays EDITED.
+ * If QA fails, issues are posted to ClickUp and status set to waiting.
  */
 async function triggerQA(taskId, campusId) {
   const { video, campus } = await resolveTask(taskId, campusId);
@@ -284,17 +284,17 @@ async function triggerQA(taskId, campusId) {
     // QA passed — video is now eligible for Frame.io upload.
     // The actual upload happens when status moves to DONE.
   } else {
-    // TODO: Update ClickUp status to NEEDS REVISIONS once CLICKUP_API_KEY is available
+    // TODO: Update ClickUp status to waiting once CLICKUP_API_KEY is available
     // await fetch(`https://api.clickup.com/api/v2/task/${taskId}`, {
     //   method: 'PUT',
     //   headers: { Authorization: process.env.CLICKUP_API_KEY, 'Content-Type': 'application/json' },
-    //   body: JSON.stringify({ status: 'NEEDS REVISIONS' }),
+    //   body: JSON.stringify({ status: 'waiting' }),
     // });
 
     // Update status in Supabase to reflect the block
     await supabase
       .from('videos')
-      .update({ status: 'NEEDS REVISIONS', updated_at: new Date().toISOString() })
+      .update({ status: 'waiting', updated_at: new Date().toISOString() })
       .eq('id', video.id);
 
     await log({
@@ -357,7 +357,7 @@ async function handleFootageDetected(taskId, campusId) {
   // Update status in Supabase
   const { error: uErr } = await supabase
     .from('videos')
-    .update({ status: 'READY FOR EDITING', updated_at: new Date().toISOString() })
+    .update({ status: 'ready for editing', updated_at: new Date().toISOString() })
     .eq('id', video.id);
   if (uErr) throw new Error(`Supabase update failed (videos.status): ${uErr.message}`);
 
@@ -365,14 +365,14 @@ async function handleFootageDetected(taskId, campusId) {
   // await fetch(`https://api.clickup.com/api/v2/task/${taskId}`, {
   //   method: 'PUT',
   //   headers: { Authorization: process.env.CLICKUP_API_KEY, 'Content-Type': 'application/json' },
-  //   body: JSON.stringify({ status: 'READY FOR EDITING' }),
+  //   body: JSON.stringify({ status: 'ready for editing' }),
   // });
 
   await log({
     campusId: campus.id,
     agent: AGENT_NAME,
     action: 'footage_detected_status_updated',
-    payload: { taskId, videoId: video.id, fileCount: files.length, newStatus: 'READY FOR EDITING' },
+    payload: { taskId, videoId: video.id, fileCount: files.length, newStatus: 'ready for editing' },
   });
 }
 

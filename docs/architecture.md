@@ -55,7 +55,7 @@ All webhooks verify signatures before processing.
 | Agent              | Type          | Trigger                                  | Key Action                                      |
 |--------------------|---------------|------------------------------------------|--------------------------------------------------|
 | Pipeline Agent     | Automation    | ClickUp/Dropbox webhooks                 | Status changes, folder creation, editor assignment |
-| QA Agent           | LLM-powered   | Status → EDITED                          | Caption check, LUFS check, stutter detection      |
+| QA Agent           | LLM-powered   | Status → uploaded to dropbox             | Caption check, LUFS check, stutter detection      |
 | Research Agent     | LLM + scraper | Daily/weekly cron                        | Scrape trending content, classify, store           |
 | Performance Agent  | LLM-powered   | Weekly (Monday AM)                       | Pattern analysis on view data + transcripts        |
 | Scripting Agent    | LLM-powered   | Google Calendar (student filming event)  | Generate 3 concepts per student                    |
@@ -65,22 +65,22 @@ All webhooks verify signatures before processing.
 ### Pre-Production
 1. Research Agent populates `research_library` (scheduled)
 2. Performance Agent populates `performance_signals` (weekly)
-3. Google Calendar fires → Scripting Agent reads student context + signals + research → creates ClickUp tasks in IDEA status
+3. Google Calendar fires → Scripting Agent reads student context + signals + research → creates ClickUp tasks in "idea" status
 4. Scott reviews, eliminates concepts [MANUAL]
-5. Status → READY FOR SHOOTING [MANUAL] → Pipeline Agent creates Dropbox folders
+5. Status → "ready for shooting" [MANUAL] → Pipeline Agent creates Dropbox folders
 
 ### Production
 6. Filming + Dropbox upload [MANUAL]
-7. Pipeline Agent detects files in Dropbox → status → READY FOR EDITING
+7. Pipeline Agent detects files in Dropbox → status → "ready for editing"
 8. Pipeline Agent assigns editor by lowest active task count
 
 ### Post-Production (Phase 1: QA + Delivery only)
-9. Editor completes work, sets status → EDITED [MANUAL]
+9. Editor completes work, sets status → "uploaded to dropbox" [MANUAL]
 10. QA Agent runs checks (captions, LUFS, stutter)
 11. Pass → Pipeline Agent uploads to Frame.io, updates ClickUp
 12. Fail → QA Agent posts issues to ClickUp comments
-13. Frame.io comments > 0 → Pipeline Agent sets NEEDS REVISIONS
-14. Scott approves → DONE [MANUAL] → Pipeline Agent creates share link
+13. Frame.io comments > 0 → Pipeline Agent sets "waiting"
+14. Scott approves → "done" [MANUAL] → Pipeline Agent creates share link
 
 ## Infrastructure
 
