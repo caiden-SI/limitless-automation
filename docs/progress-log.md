@@ -310,5 +310,72 @@ Scaffolded with Vite + React. Connects to Supabase with **anon key only** (no se
 ### Next Steps
 - Run `scripts/setup-dashboard-rls.sql` in Supabase SQL Editor to enable anon reads
 - Scripting Agent: awaiting Scott confirmation on student context
-- Add remaining credentials: ClickUp, Fireflies, Apify
-- Remaining Pipeline triggers: Dropbox file detection, Frame.io share link
+- Add remaining credentials: Fireflies, Apify
+- Remaining Pipeline triggers: Frame.io share link
+
+---
+
+## Session 3 — April 3, 2026
+
+### ClickUp API Integration — Live
+
+**Files created:**
+- **`lib/clickup.js`** (new) — ClickUp REST API v2 client with `getTask()`, `getTasks()`, `updateTask()`, `addComment()`, `createTask()`, `setCustomField()`, `getCustomFields()`.
+- **`scripts/verify-clickup.js`** (new) — API verification script: tests task fetch, single task detail, custom field retrieval.
+
+**Files modified:**
+- **`agents/pipeline.js`** — All ClickUp stubs replaced with live API calls:
+  - `resolveTask()` — calls `clickup.getTask()` instead of stub; resolves campus from `clickup_list_id` in campuses table
+  - `assignEditor()` — calls `clickup.updateTask()` to set ClickUp assignee (numeric user ID)
+  - `triggerQA()` — calls `clickup.updateTask()` to set status to "waiting" on QA failure
+  - `handleFootageDetected()` — calls `clickup.updateTask()` to set status to "ready for editing"
+  - `extractStudentName()` — reads "Internal Video Name" custom field from ClickUp task data
+  - Removed `getClickUpTaskStub()` entirely
+- **`agents/qa.js`** — QA failure now posts formatted report to ClickUp task comments via `clickup.addComment()`
+- **`handlers/clickup.js`** — imports `lib/clickup`, removed TODO comments
+- **`.env.example`** — added `CLICKUP_AUSTIN_LIST_ID`, `CLICKUP_FRAMEIO_FIELD_ID`, `CLICKUP_DROPBOX_FIELD_ID`
+
+**Database updates:**
+- Austin campus `clickup_list_id` set to `901707767654`
+
+### API Verification Results
+
+| Test | Result |
+|---|---|
+| GET /list/901707767654/task | **PASS** — 100 tasks returned |
+| GET /task/{id} (first task) | **PASS** — "REPAIR_RATIO", status "ready for editing" |
+| GET /list/901707767654/field | **PASS** — 7 custom fields retrieved |
+
+### Custom Fields Discovered
+
+| Field Name | Type | ID | Notes |
+|---|---|---|---|
+| E - Frame Link | url | `53590f25-d850-4c19-8c7a-7b005904e04a` | Frame.io link field |
+| Dropbox Link | short_text | `d818eb86-41ce-416f-98aa-b1d92f13459f` | Dropbox folder link |
+| Editor | users | `62642aae-d92d-49e9-a4fc-a17c137cdbe0` | Editor assignment |
+| Internal Video Name | short_text | `6e3fde3f-250f-470a-b88f-b382c599e998` | Used for student name |
+| Project Description | text | `8799f3b7-3385-4f9f-9a1b-b8872ecc78f4` | |
+| Progress | automatic_progress | `880006c8-7cb4-43ab-85fc-00df38091735` | Auto-calculated |
+| Editoral Review | drop_down | `d859f319-0e2a-4475-946c-919f97ea6ac6` | |
+
+### Status Discovery
+
+Statuses actually seen across 100 tasks: idea, ready for shooting, ready for editing, in editing, sent to client, revised, posted by client, waiting, done. "revised" was not previously in our status list — added to CLAUDE.md and dashboard.
+
+### ClickUp Integration Status
+
+| Integration Point | Status |
+|---|---|
+| GET task details | **Live** — resolveTask() uses real API |
+| PUT task status | **Live** — triggerQA(), handleFootageDetected() |
+| PUT task assignee | **Live** — assignEditor() |
+| POST task comment | **Live** — QA report on failure |
+| Campus resolution | **Live** — clickup_list_id → campuses table |
+| Custom field update | **Built** — setCustomField() ready, used when Frame.io share link is built |
+| Webhook signature | **Ready** — conditional on CLICKUP_WEBHOOK_SECRET in .env |
+
+### Next Steps
+- Set CLICKUP_WEBHOOK_SECRET in .env to enable webhook signature verification
+- Add Fireflies and Apify credentials
+- Build Frame.io share link creation (status → done trigger) using `clickup.setCustomField()` for "E - Frame Link"
+- Scripting Agent: awaiting Scott confirmation on student context

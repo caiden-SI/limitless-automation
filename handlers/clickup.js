@@ -3,6 +3,7 @@
 
 const crypto = require('crypto');
 const { log } = require('../lib/logger');
+const clickup = require('../lib/clickup');
 const pipeline = require('../agents/pipeline');
 
 /**
@@ -31,9 +32,7 @@ function verifySignature(rawBody, signature) {
 
 async function handler(req, res) {
   try {
-    // Verify webhook signature
-    // TODO: Enable signature verification once CLICKUP_WEBHOOK_SECRET is set in .env
-    // For now, skip if secret is not configured
+    // Verify webhook signature — skip if secret is not configured
     const signature = req.headers['x-signature'];
     const secret = process.env.CLICKUP_WEBHOOK_SECRET;
     if (secret) {
@@ -58,8 +57,8 @@ async function handler(req, res) {
           await log({ agent: 'pipeline', action: 'clickup_status_missing', status: 'warning', payload: { taskId, historyItems } });
           break;
         }
-        // TODO: Resolve campusId from ClickUp list_id once CLICKUP_API_KEY is set.
-        // For now pass null — resolveTask will fall back to first campus.
+        // Pass null for campusId — resolveTask will look up the task's list
+        // and resolve campus from clickup_list_id in the campuses table.
         await pipeline.handleStatusChange(taskId, newStatus, null);
         break;
       }

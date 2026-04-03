@@ -11,7 +11,7 @@ Foundation (schema → webhook server → PM2) → Agents (pipeline → QA → r
 - Agents communicate through Supabase only — never call each other directly
 - Agent writes to table → webhook/scheduler detects change → next agent reads
 - All credentials in `.env`, sourced from 1Password vault "Limitless - Caiden"
-- ClickUp status names are lowercase: idea, ready for shooting, ready for editing, in editing, edited, uploaded to dropbox, sent to client, posted by client, done, waiting
+- ClickUp status names are lowercase: idea, ready for shooting, ready for editing, in editing, edited, uploaded to dropbox, sent to client, revised, posted by client, done, waiting
 - Dropbox: 1-hour delay after footage upload before triggering editing pipeline
 - Service role key for agent calls (bypasses RLS), anon key for dashboard
 - All agents use `claude-sonnet-4-20250514` — no other model

@@ -15,6 +15,7 @@ const { supabase } = require('../lib/supabase');
 const { askJson } = require('../lib/claude');
 const { log } = require('../lib/logger');
 const dropbox = require('../lib/dropbox');
+const clickup = require('../lib/clickup');
 const { parseSRT, cuesToPlainText } = require('../tools/srt-parser');
 
 const AGENT_NAME = 'qa';
@@ -86,12 +87,10 @@ async function runQA(videoId, campusId) {
         payload: { videoId, title: video.title, issueCount: allIssues.length, issues: allIssues },
       });
 
-      // TODO: Post QA report to ClickUp task comments once CLICKUP_API_KEY is available
-      // await fetch(`https://api.clickup.com/api/v2/task/${video.clickup_task_id}/comment`, {
-      //   method: 'POST',
-      //   headers: { Authorization: process.env.CLICKUP_API_KEY, 'Content-Type': 'application/json' },
-      //   body: JSON.stringify({ comment_text: formatReport(report) }),
-      // });
+      // Post QA report to ClickUp task comments
+      if (video.clickup_task_id) {
+        await clickup.addComment(video.clickup_task_id, formatReport(report));
+      }
     }
 
     return { passed, report };

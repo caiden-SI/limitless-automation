@@ -11,6 +11,7 @@
 const { supabase } = require('../lib/supabase');
 const { log } = require('../lib/logger');
 const dropbox = require('../lib/dropbox');
+const clickup = require('../lib/clickup');
 const qa = require('./qa');
 
 const AGENT_NAME = 'pipeline';
@@ -89,20 +90,23 @@ async function resolveTask(taskId, campusId) {
   }
 
   // Video not in Supabase yet — fetch task details from ClickUp and create it
-  // TODO: Replace stub with real ClickUp API call once CLICKUP_API_KEY is set
-  // const taskData = await clickup.getTask(taskId);
-  // const title = taskData.name;
-  // const studentName = extractStudentName(taskData); // from custom field or description
-  const taskData = await getClickUpTaskStub(taskId);
+  const taskData = await clickup.getTask(taskId);
 
   // Determine campus — use provided campusId or look up by ClickUp list ID
   let cid = campusId;
   if (!cid) {
-    // TODO: Replace stub — resolve campus from taskData.list.id against campuses.clickup_list_id
-    // const { data: c } = await supabase.from('campuses').select('id').eq('clickup_list_id', taskData.list.id).single();
-    // cid = c.id;
-    const { data: c } = await supabase.from('campuses').select('id').limit(1).single();
-    cid = c.id;
+    const { data: c } = await supabase
+      .from('campuses')
+      .select('id')
+      .eq('clickup_list_id', taskData.list?.id)
+      .maybeSingle();
+    // Fall back to first campus if list ID not mapped
+    if (c) {
+      cid = c.id;
+    } else {
+      const { data: fallback } = await supabase.from('campuses').select('id').limit(1).single();
+      cid = fallback.id;
+    }
   }
 
   const { data: campus, error: cErr } = await supabase
@@ -112,6 +116,9 @@ async function resolveTask(taskId, campusId) {
     .single();
   if (cErr) throw new Error(`Supabase query failed (campuses): ${cErr.message}`);
 
+  // Extract student name from task custom fields or description
+  const studentName = extractStudentName(taskData);
+
   // Insert new video record
   const { data: newVideo, error: iErr } = await supabase
     .from('videos')
@@ -119,8 +126,8 @@ async function resolveTask(taskId, campusId) {
       campus_id: cid,
       clickup_task_id: taskId,
       title: taskData.name,
-      student_name: taskData.studentName || null,
-      status: 'ready for shooting',
+      student_name: studentName,
+      status: taskData.status?.status || 'ready for shooting',
     })
     .select('*')
     .single();
@@ -130,22 +137,19 @@ async function resolveTask(taskId, campusId) {
 }
 
 /**
- * Stub for ClickUp GET /task/{id} — returns minimal task shape.
- * TODO: Remove when CLICKUP_API_KEY is available.
+ * Extract student name from ClickUp task.
+ * Checks "Internal Video Name" custom field, then description, then returns null.
  */
-async function getClickUpTaskStub(taskId) {
-  // TODO: Replace with real ClickUp API call:
-  // const res = await fetch(`https://api.clickup.com/api/v2/task/${taskId}`, {
-  //   headers: { Authorization: process.env.CLICKUP_API_KEY },
-  // });
-  // if (!res.ok) throw new Error(`ClickUp API error: ${res.status}`);
-  // return res.json();
-  return {
-    id: taskId,
-    name: `Task ${taskId}`,
-    studentName: null,
-    list: { id: null },
-  };
+function extractStudentName(taskData) {
+  // Check custom fields for student-related info
+  if (taskData.custom_fields) {
+    for (const f of taskData.custom_fields) {
+      if (f.name === 'Internal Video Name' && f.value) {
+        return String(f.value);
+      }
+    }
+  }
+  return null;
 }
 
 /**
@@ -247,18 +251,16 @@ async function assignEditor(taskId, campusId) {
     .eq('id', video.id);
   if (uErr) throw new Error(`Supabase update failed (videos.assignee_id): ${uErr.message}`);
 
-  // TODO: Update ClickUp task assignee once CLICKUP_API_KEY is available
-  // await fetch(`https://api.clickup.com/api/v2/task/${taskId}`, {
-  //   method: 'PUT',
-  //   headers: { Authorization: process.env.CLICKUP_API_KEY, 'Content-Type': 'application/json' },
-  //   body: JSON.stringify({ assignees: { add: [chosen.clickup_user_id] } }),
-  // });
+  // Update ClickUp task assignee
+  await clickup.updateTask(taskId, {
+    assignees: { add: [Number(chosen.clickup_user_id)] },
+  });
 
   await log({
     campusId: campus.id,
     agent: AGENT_NAME,
     action: 'editor_assigned',
-    payload: { taskId, videoId: video.id, editorId: chosen.id, editorName: chosen.name, activeCount: counts[0].count },
+    payload: { taskId, videoId: video.id, editorId: chosen.id, editorName: chosen.name, clickupUserId: chosen.clickup_user_id, activeCount: counts[0].count },
   });
 
   return chosen;
@@ -282,14 +284,10 @@ async function triggerQA(taskId, campusId) {
       payload: { taskId, videoId: video.id },
     });
     // QA passed — video is now eligible for Frame.io upload.
-    // The actual upload happens when status moves to DONE.
+    // The actual upload happens when status moves to done.
   } else {
-    // TODO: Update ClickUp status to waiting once CLICKUP_API_KEY is available
-    // await fetch(`https://api.clickup.com/api/v2/task/${taskId}`, {
-    //   method: 'PUT',
-    //   headers: { Authorization: process.env.CLICKUP_API_KEY, 'Content-Type': 'application/json' },
-    //   body: JSON.stringify({ status: 'waiting' }),
-    // });
+    // Update ClickUp status to waiting
+    await clickup.updateTask(taskId, { status: 'waiting' });
 
     // Update status in Supabase to reflect the block
     await supabase
@@ -361,12 +359,8 @@ async function handleFootageDetected(taskId, campusId) {
     .eq('id', video.id);
   if (uErr) throw new Error(`Supabase update failed (videos.status): ${uErr.message}`);
 
-  // TODO: Update ClickUp task status once CLICKUP_API_KEY is available
-  // await fetch(`https://api.clickup.com/api/v2/task/${taskId}`, {
-  //   method: 'PUT',
-  //   headers: { Authorization: process.env.CLICKUP_API_KEY, 'Content-Type': 'application/json' },
-  //   body: JSON.stringify({ status: 'ready for editing' }),
-  // });
+  // Update ClickUp task status
+  await clickup.updateTask(taskId, { status: 'ready for editing' });
 
   await log({
     campusId: campus.id,
