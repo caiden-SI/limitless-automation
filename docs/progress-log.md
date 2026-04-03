@@ -317,66 +317,109 @@ Scaffolded with Vite + React. Connects to Supabase with **anon key only** (no se
 
 ## Session 3 — April 3, 2026
 
-### ClickUp API Integration — Live
+New MacBook setup session. Repo freshly cloned, `npm install` run, `.env` populated with all credentials except Google Calendar (not yet set up). Scott meeting provided critical corrections and data.
 
-**Files created:**
-- **`lib/clickup.js`** (new) — ClickUp REST API v2 client with `getTask()`, `getTasks()`, `updateTask()`, `addComment()`, `createTask()`, `setCustomField()`, `getCustomFields()`.
-- **`scripts/verify-clickup.js`** (new) — API verification script: tests task fetch, single task detail, custom field retrieval.
+### Scott Meeting Outcomes (April 3)
 
-**Files modified:**
-- **`agents/pipeline.js`** — All ClickUp stubs replaced with live API calls:
-  - `resolveTask()` — calls `clickup.getTask()` instead of stub; resolves campus from `clickup_list_id` in campuses table
-  - `assignEditor()` — calls `clickup.updateTask()` to set ClickUp assignee (numeric user ID)
-  - `triggerQA()` — calls `clickup.updateTask()` to set status to "waiting" on QA failure
-  - `handleFootageDetected()` — calls `clickup.updateTask()` to set status to "ready for editing"
-  - `extractStudentName()` — reads "Internal Video Name" custom field from ClickUp task data
-  - Removed `getClickUpTaskStub()` entirely
-- **`agents/qa.js`** — QA failure now posts formatted report to ClickUp task comments via `clickup.addComment()`
-- **`handlers/clickup.js`** — imports `lib/clickup`, removed TODO comments
-- **`.env.example`** — added `CLICKUP_AUSTIN_LIST_ID`, `CLICKUP_FRAMEIO_FIELD_ID`, `CLICKUP_DROPBOX_FIELD_ID`
+Two key updates from the call:
 
-**Database updates:**
-- Austin campus `clickup_list_id` set to `901707767654`
+1. **ClickUp status names are wrong everywhere** — the codebase had uppercase guesses (IDEA, READY FOR SHOOTING, EDITED, NEEDS REVISIONS, etc.). Scott confirmed the real statuses are all lowercase and some have different names entirely. Corrected mapping:
 
-### API Verification Results
+   | Old (incorrect) | New (correct) |
+   |---|---|
+   | IDEA | idea |
+   | READY FOR SHOOTING | ready for shooting |
+   | READY FOR EDITING | ready for editing |
+   | IN EDITING | in editing |
+   | EDITED | edited |
+   | _(n/a)_ | uploaded to dropbox |
+   | _(n/a)_ | sent to client |
+   | _(n/a)_ | revised |
+   | _(n/a)_ | posted by client |
+   | NEEDS REVISIONS | waiting |
+   | DONE | done |
+
+   The QA Agent trigger is "edited" (not "uploaded to dropbox" — that was a wrong initial mapping). These are separate statuses. "revised" was discovered later in live API data across 100 tasks.
+
+2. **Austin campus editors confirmed:**
+   - Charles Williams — ClickUp user ID `95229910`, charles@limitlessyt.com
+   - Tipra — ClickUp user ID `95272148`, arpitv.tip@gmail.com
+
+### Status Names Corrected — 16 Files Updated
+
+Updated every status reference across the entire codebase:
+
+**Source code (7 files):** `agents/pipeline.js` (case statements, Supabase queries, comments), `agents/qa.js` (trigger comment), `agents/scripting.js` (task creation comments), `handlers/frameio.js` (NEEDS REVISIONS → waiting), `dashboard/src/components/PipelineView.jsx` (STATUS_ORDER, STATUS_COLORS — now 11 columns), `dashboard/src/components/QAQueue.jsx` (filter logic, section header), `dashboard/src/lib/hooks.js` (QA queue filter, editor count query)
+
+**Documentation (5 files):** `CLAUDE.md` (rules section), `docs/architecture.md` (agent table, data flow), `docs/build-order.md` (pipeline tasks), `docs/integrations.md` (Dropbox and Frame.io webhook notes), `docs/decisions.md` (Dropbox delay decision + two new entries documenting the changes)
+
+**Tests (3 files):** `scripts/test-pipeline-folders.js`, `scripts/test-qa-agent.js`, `scripts/test-performance-agent.js`
+
+**Progress log (1 file):** `docs/progress-log.md` — all historical references updated to match current code
+
+### Editors Seeded
+
+Created `scripts/seed-editors.js` — checks for existing records by email before inserting (safe to re-run). Initial run with upsert failed (no unique constraint on `email`), switched to select-then-insert pattern.
+
+```
+  OK: Charles Williams (charles@limitlessyt.com) — id: 6f81df1e-2f8e-45fe-81e7-00feccdd7924
+  OK: Tipra (arpitv.tip@gmail.com) — id: 6d69b0f0-4821-4c95-8222-97a8d49b1d36
+```
+
+Pipeline Agent's `assignEditor()` now has real editor rows to work with.
+
+### ClickUp API Integration — Fully Wired
+
+**New file: `lib/clickup.js`** — ClickUp REST API v2 client with 7 methods:
+- `getTask(taskId)` — GET /task/{id}
+- `getTasks(listId, params)` — GET /list/{id}/task
+- `updateTask(taskId, updates)` — PUT /task/{id} (status, assignees, etc.)
+- `addComment(taskId, text)` — POST /task/{id}/comment
+- `createTask(listId, data)` — POST /list/{id}/task
+- `setCustomField(taskId, fieldId, value)` — POST /task/{id}/field/{field_id}
+- `getCustomFields(listId)` — GET /list/{id}/field
+
+**API verification (`scripts/verify-clickup.js`):**
 
 | Test | Result |
 |---|---|
 | GET /list/901707767654/task | **PASS** — 100 tasks returned |
-| GET /task/{id} (first task) | **PASS** — "REPAIR_RATIO", status "ready for editing" |
+| GET /task/86e0qcwt7 | **PASS** — "REPAIR_RATIO", status "ready for editing", assigned to Charles Williams |
 | GET /list/901707767654/field | **PASS** — 7 custom fields retrieved |
 
-### Custom Fields Discovered
+**Custom fields discovered:**
 
-| Field Name | Type | ID | Notes |
-|---|---|---|---|
-| E - Frame Link | url | `53590f25-d850-4c19-8c7a-7b005904e04a` | Frame.io link field |
-| Dropbox Link | short_text | `d818eb86-41ce-416f-98aa-b1d92f13459f` | Dropbox folder link |
-| Editor | users | `62642aae-d92d-49e9-a4fc-a17c137cdbe0` | Editor assignment |
-| Internal Video Name | short_text | `6e3fde3f-250f-470a-b88f-b382c599e998` | Used for student name |
-| Project Description | text | `8799f3b7-3385-4f9f-9a1b-b8872ecc78f4` | |
-| Progress | automatic_progress | `880006c8-7cb4-43ab-85fc-00df38091735` | Auto-calculated |
-| Editoral Review | drop_down | `d859f319-0e2a-4475-946c-919f97ea6ac6` | |
+| Field Name | Type | ID |
+|---|---|---|
+| E - Frame Link | url | `53590f25-d850-4c19-8c7a-7b005904e04a` |
+| Dropbox Link | short_text | `d818eb86-41ce-416f-98aa-b1d92f13459f` |
+| Editor | users | `62642aae-d92d-49e9-a4fc-a17c137cdbe0` |
+| Internal Video Name | short_text | `6e3fde3f-250f-470a-b88f-b382c599e998` |
+| Project Description | text | `8799f3b7-3385-4f9f-9a1b-b8872ecc78f4` |
+| Progress | automatic_progress | `880006c8-7cb4-43ab-85fc-00df38091735` |
+| Editoral Review | drop_down | `d859f319-0e2a-4475-946c-919f97ea6ac6` |
 
-### Status Discovery
+**Stubs replaced in `agents/pipeline.js`:**
+- `resolveTask()` — real `clickup.getTask()` call, campus resolution from `clickup_list_id` column, `extractStudentName()` reads "Internal Video Name" custom field. `getClickUpTaskStub()` deleted.
+- `assignEditor()` — `clickup.updateTask()` with `{ assignees: { add: [Number(clickup_user_id)] } }` — sets ClickUp assignee in addition to Supabase
+- `triggerQA()` — `clickup.updateTask()` sets status to "waiting" on QA failure
+- `handleFootageDetected()` — `clickup.updateTask()` sets status to "ready for editing" after Dropbox file detection
 
-Statuses actually seen across 100 tasks: idea, ready for shooting, ready for editing, in editing, sent to client, revised, posted by client, waiting, done. "revised" was not previously in our status list — added to CLAUDE.md and dashboard.
+**Stubs replaced in `agents/qa.js`:**
+- QA failure now posts formatted report to ClickUp task comments via `clickup.addComment()`
 
-### ClickUp Integration Status
+**Stubs replaced in `handlers/clickup.js`:**
+- Imports `lib/clickup`, TODO comments removed. Campus resolution note updated.
 
-| Integration Point | Status |
-|---|---|
-| GET task details | **Live** — resolveTask() uses real API |
-| PUT task status | **Live** — triggerQA(), handleFootageDetected() |
-| PUT task assignee | **Live** — assignEditor() |
-| POST task comment | **Live** — QA report on failure |
-| Campus resolution | **Live** — clickup_list_id → campuses table |
-| Custom field update | **Built** — setCustomField() ready, used when Frame.io share link is built |
-| Webhook signature | **Live** — CLICKUP_WEBHOOK_SECRET set, verification active |
+**Database updates:**
+- Austin campus `clickup_list_id` set to `901707767654` (was null)
+- `.env.example` updated with `CLICKUP_AUSTIN_LIST_ID`, `CLICKUP_FRAMEIO_FIELD_ID`, `CLICKUP_DROPBOX_FIELD_ID`
 
-### ClickUp Webhook Registered
+Zero ClickUp TODO stubs remain in the codebase.
 
-Registered via `POST /team/9017220135/webhook`:
+### ClickUp Webhook Registered via ngrok
+
+Started Express server on port 3000, confirmed `/health` returns 200. Registered webhook via `POST /team/9017220135/webhook`:
 
 | Field | Value |
 |---|---|
@@ -386,9 +429,42 @@ Registered via `POST /team/9017220135/webhook`:
 | List ID | `901707767654` (AUSTIN Pipeline) |
 | Health | active, fail_count: 0 |
 
-Secret stored in `.env` as `CLICKUP_WEBHOOK_SECRET`. Server restarted — signature verification now active for all inbound ClickUp webhooks.
+Webhook secret stored in `.env` as `CLICKUP_WEBHOOK_SECRET`. Server restarted — HMAC-SHA256 signature verification now active for all inbound ClickUp webhooks.
 
-### Next Steps
-- Add Fireflies and Apify credentials
-- Build Frame.io share link creation (status → done trigger) using `clickup.setCustomField()` for "E - Frame Link"
-- Scripting Agent: awaiting Scott confirmation on student context
+**End-to-end webhook flow now live:**
+1. ClickUp status change → webhook fires → ngrok → `localhost:3000/webhooks/clickup`
+2. `handlers/clickup.js` verifies HMAC signature, extracts `taskId` and `newStatus`
+3. `pipeline.handleStatusChange()` routes to correct action:
+   - `ready for shooting` → creates Dropbox folders (`/{campus-slug}/{title}/[FOOTAGE]/`, `/[PROJECT]/`)
+   - `ready for editing` → assigns editor by lowest active task count (Supabase + ClickUp)
+   - `edited` → runs QA gate (captions, LUFS, stutter) — pass continues, fail sets "waiting" + posts comment
+   - `done` → creates Frame.io share link (not yet implemented)
+
+### Credentials Collected This Session
+
+| Credential | Source | Status |
+|---|---|---|
+| CLICKUP_API_KEY | 1Password | **Set** — verified against live API |
+| CLICKUP_WEBHOOK_SECRET | ClickUp webhook registration response | **Set** — signature verification active |
+| CLICKUP_AUSTIN_LIST_ID | API verification (`901707767654`) | **Set** in .env.example |
+| CLICKUP_FRAMEIO_FIELD_ID | API field discovery (`53590f25...`) | **Documented** in .env.example |
+| CLICKUP_DROPBOX_FIELD_ID | API field discovery (`d818eb86...`) | **Documented** in .env.example |
+| Google Calendar | — | **Not set up** — still blocked |
+
+### Agent Status Summary (End of Session 3)
+
+| Agent | Status | Trigger | ClickUp Integration |
+|---|---|---|---|
+| Pipeline | **Live** — all 4 triggers wired | ClickUp webhook via ngrok | GET task, PUT status, PUT assignee |
+| QA | **Live** — all 4 checks | "edited" status | POST comment on failure |
+| Research | Built — needs APIFY_API_TOKEN | Daily 6 AM cron | — |
+| Performance | Built — full analysis pipeline | Monday 7 AM cron | — |
+| Scripting | **Blocked** — student context under review | — | — |
+
+### What's Next
+
+1. **Codex adversarial review** — before live testing, run a full review of the Pipeline and QA agent code paths for edge cases, error handling gaps, and race conditions
+2. **Live end-to-end test** — change a task status in ClickUp and verify the full webhook → agent → Supabase → ClickUp round trip
+3. Build Frame.io share link creation (status → done trigger) using `clickup.setCustomField()` for "E - Frame Link"
+4. Add Fireflies and Apify credentials
+5. Scripting Agent: awaiting Scott confirmation on student context
