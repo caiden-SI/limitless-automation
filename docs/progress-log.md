@@ -372,10 +372,23 @@ Statuses actually seen across 100 tasks: idea, ready for shooting, ready for edi
 | POST task comment | **Live** — QA report on failure |
 | Campus resolution | **Live** — clickup_list_id → campuses table |
 | Custom field update | **Built** — setCustomField() ready, used when Frame.io share link is built |
-| Webhook signature | **Ready** — conditional on CLICKUP_WEBHOOK_SECRET in .env |
+| Webhook signature | **Live** — CLICKUP_WEBHOOK_SECRET set, verification active |
+
+### ClickUp Webhook Registered
+
+Registered via `POST /team/9017220135/webhook`:
+
+| Field | Value |
+|---|---|
+| Webhook ID | `a8a5d682-ebe1-4cc1-b8a6-5a195859d886` |
+| Endpoint | `https://nonhumanistic-rona-bathymetric.ngrok-free.dev/webhooks/clickup` |
+| Events | `taskStatusUpdated`, `taskCreated` |
+| List ID | `901707767654` (AUSTIN Pipeline) |
+| Health | active, fail_count: 0 |
+
+Secret stored in `.env` as `CLICKUP_WEBHOOK_SECRET`. Server restarted — signature verification now active for all inbound ClickUp webhooks.
 
 ### Next Steps
-- Set CLICKUP_WEBHOOK_SECRET in .env to enable webhook signature verification
 - Add Fireflies and Apify credentials
 - Build Frame.io share link creation (status → done trigger) using `clickup.setCustomField()` for "E - Frame Link"
 - Scripting Agent: awaiting Scott confirmation on student context
