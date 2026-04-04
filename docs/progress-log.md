@@ -463,8 +463,62 @@ Webhook secret stored in `.env` as `CLICKUP_WEBHOOK_SECRET`. Server restarted �
 
 ### What's Next
 
-1. **Codex adversarial review** — before live testing, run a full review of the Pipeline and QA agent code paths for edge cases, error handling gaps, and race conditions
-2. **Live end-to-end test** — change a task status in ClickUp and verify the full webhook → agent → Supabase → ClickUp round trip
-3. Build Frame.io share link creation (status → done trigger) using `clickup.setCustomField()` for "E - Frame Link"
-4. Add Fireflies and Apify credentials
-5. Scripting Agent: awaiting Scott confirmation on student context
+1. **Live end-to-end test** — change a task status in ClickUp and verify the full webhook → agent → Supabase → ClickUp round trip
+2. Build Frame.io share link creation (status → done trigger) using `clickup.setCustomField()` for "E - Frame Link"
+3. Add Fireflies and Apify credentials
+4. Scripting Agent: awaiting Scott confirmation on student context
+
+---
+
+## Session 3 (continued) — April 3, 2026: Codex Adversarial Review
+
+### Codex Review — 4 Issues Found and Fixed
+
+Ran Codex adversarial review against full codebase (49 files, ~7,500 lines). Verdict: **needs-attention**. All 4 findings fixed and committed.
+
+#### 1. [CRITICAL] Dashboard RLS — blanket anon access removed
+
+**File:** `scripts/setup-dashboard-rls.sql`
+
+Old policies granted unrestricted `SELECT` (`USING (true)`) on `videos`, `agent_logs`, and `performance_signals` to the `anon` role. Anyone with the dashboard URL and anon key could read the full pipeline state across all campuses.
+
+**Fix:** Replaced with `campus_id IS NOT NULL` scoping. Dashboard queries must always include a `campus_id` filter. Old policies are dropped first for clean re-application. Applied in Supabase SQL Editor.
+
+#### 2. [CRITICAL] Pipeline resolveTask() — first-campus fallback removed
+
+**File:** `agents/pipeline.js` — `resolveTask()`
+
+When a ClickUp webhook referenced a list ID not mapped to any campus, the code silently fell back to the first campus in the database (`SELECT id FROM campuses LIMIT 1`). This could cause cross-tenant data corruption — videos, folders, editor assignments, and QA all running against the wrong campus.
+
+**Fix:** Logs the error to `agent_logs` with status "error" and throws with a clear message: `No campus mapped for ClickUp list ID: {id}. Configure clickup_list_id in the campuses table.` Webhook is rejected.
+
+#### 3. [HIGH] Pipeline done handler — disabled until createShareLink() is implemented
+
+**File:** `agents/pipeline.js` — `handleStatusChange()` case `done`
+
+The `done` case called `createShareLink()`, which was a TODO stub that only logged. Users could mark tasks done expecting delivery to happen, but nothing actually occurred.
+
+**Fix:** Replaced with `done_received_noop` log entry. TODO comment preserved with the 4-step implementation plan (query video → Frame.io share link API → update Supabase → update ClickUp custom field). No false delivery promises.
+
+#### 4. [MEDIUM] Dashboard campus selector — render-time state mutation
+
+**File:** `dashboard/src/App.jsx`
+
+`setCampusId()` was called during render whenever `campusId` was falsy, making "All Campuses" mode unreachable (selecting null immediately overwrote with first campus on next render).
+
+**Fix:** Moved to `useEffect` with `initialized` guard. Auto-selection only happens on first load. Selecting "All Campuses" (null) now persists correctly.
+
+### RLS Policies Applied
+
+Updated policies run in Supabase SQL Editor — confirmed applied.
+
+### Agent Status Summary (Post-Review)
+
+| Agent | Status | Trigger | Review Issues |
+|---|---|---|---|
+| Pipeline | **Live** — 3 triggers active, done disabled | ClickUp webhook | 2 fixed (campus fallback, done stub) |
+| QA | **Live** — all 4 checks | "edited" status | No issues |
+| Research | Built — needs APIFY_API_TOKEN | Daily 6 AM cron | No issues |
+| Performance | Built — full analysis pipeline | Monday 7 AM cron | No issues |
+| Scripting | **Blocked** — student context under review | — | — |
+| Dashboard | **Live** — campus selector fixed, RLS hardened | localhost:5173 | 2 fixed (RLS, selector) |
