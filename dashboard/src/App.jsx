@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useCampuses } from './lib/hooks';
 import PipelineView from './components/PipelineView';
 import AgentActivityFeed from './components/AgentActivityFeed';
@@ -20,10 +20,14 @@ export default function App() {
   const [campusId, setCampusId] = useState(null);
   const [activeTab, setActiveTab] = useState('pipeline');
 
-  // Auto-select first campus once loaded
-  if (!campusId && campuses?.length > 0) {
-    setCampusId(campuses[0].id);
-  }
+  // Auto-select first campus on initial load only
+  const [initialized, setInitialized] = useState(false);
+  useEffect(() => {
+    if (!initialized && campuses?.length > 0) {
+      setCampusId(campuses[0].id);
+      setInitialized(true);
+    }
+  }, [campuses, initialized]);
 
   return (
     <div className="app">

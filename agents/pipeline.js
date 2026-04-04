@@ -40,7 +40,12 @@ async function handleStatusChange(taskId, newStatus, campusId) {
         break;
 
       case 'done':
-        await createShareLink(taskId, campusId);
+        // TODO: Enable once createShareLink() is fully implemented:
+        //   1. Query videos table for frameio_link by clickup_task_id
+        //   2. Call Frame.io API POST /assets/{asset_id}/share_links
+        //   3. Update videos.frameio_share_link in Supabase
+        //   4. Update ClickUp custom link field via API
+        await log({ campusId, agent: AGENT_NAME, action: 'done_received_noop', payload: { taskId, reason: 'createShareLink not yet implemented' } });
         break;
 
       default:
@@ -100,12 +105,19 @@ async function resolveTask(taskId, campusId) {
       .select('id')
       .eq('clickup_list_id', taskData.list?.id)
       .maybeSingle();
-    // Fall back to first campus if list ID not mapped
     if (c) {
       cid = c.id;
     } else {
-      const { data: fallback } = await supabase.from('campuses').select('id').limit(1).single();
-      cid = fallback.id;
+      const listId = taskData.list?.id || 'unknown';
+      await log({
+        campusId: null,
+        agent: AGENT_NAME,
+        action: 'resolve_task_rejected',
+        status: 'error',
+        errorMessage: `No campus mapped for ClickUp list ID: ${listId}`,
+        payload: { taskId, listId },
+      });
+      throw new Error(`No campus mapped for ClickUp list ID: ${listId}. Configure clickup_list_id in the campuses table.`);
     }
   }
 
