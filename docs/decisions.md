@@ -236,3 +236,25 @@ Both set to `active = true`, `campus_id` = Austin campus UUID (`0ba4268f-f010-43
 **Rationale:** The initial status migration incorrectly mapped the old "EDITED" status to "uploaded to dropbox". Scott confirmed the actual QA trigger is "edited" (lowercase) — a separate status. "uploaded to dropbox" exists in the pipeline but does not trigger QA. The full status list is now: idea, ready for shooting, ready for editing, in editing, edited, uploaded to dropbox, sent to client, posted by client, done, waiting.
 
 **Status:** Done.
+
+---
+
+### 2026-04-03 | Codex adversarial review — 4 fixes applied
+
+**Decision:** Fix all 4 issues identified by the Codex adversarial review of the full codebase.
+
+**Findings and changes:**
+
+1. **[CRITICAL] Dashboard RLS — blanket anon access removed** (`scripts/setup-dashboard-rls.sql`)
+   Old policies granted unrestricted `SELECT` on `videos`, `agent_logs`, and `performance_signals` to the `anon` role, exposing all data across campuses. Replaced with policies that require `campus_id IS NOT NULL`, so the dashboard must always filter by campus_id. Campuses table retains `active = true` filter (no cross-tenant risk). Editors table now requires both `active = true` AND `campus_id IS NOT NULL`.
+
+2. **[CRITICAL] Pipeline resolveTask() — first-campus fallback removed** (`agents/pipeline.js`)
+   When an incoming ClickUp webhook referenced a list ID not mapped to any campus, the code silently fell back to the first campus in the database. This could cause cross-tenant data corruption. Now logs the error and throws, rejecting the webhook with a clear message indicating which list ID needs to be configured.
+
+3. **[HIGH] Pipeline done handler — disabled until createShareLink() is implemented** (`agents/pipeline.js`)
+   The `done` status case previously called `createShareLink()`, which was a stub (TODO + log). This meant the final delivery action silently did nothing. Now logs `done_received_noop` and takes no action. TODO comment preserved with the 4-step implementation plan for when Frame.io share link creation is built.
+
+4. **[MEDIUM] Dashboard campus selector — render-time state mutation fixed** (`dashboard/src/App.jsx`)
+   `setCampusId()` was called during render whenever `campusId` was falsy, which made "All Campuses" mode unreachable and violated React's rules. Moved to a `useEffect` with an `initialized` guard so auto-selection only happens on first load. Selecting "All Campuses" (null) now persists correctly.
+
+**Status:** Done — code changes applied. RLS SQL must be run manually in Supabase SQL Editor.
