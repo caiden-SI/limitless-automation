@@ -522,3 +522,58 @@ Updated policies run in Supabase SQL Editor — confirmed applied.
 | Performance | Built — full analysis pipeline | Monday 7 AM cron | No issues |
 | Scripting | **Blocked** — student context under review | — | — |
 | Dashboard | **Live** — campus selector fixed, RLS hardened | localhost:5173 | 2 fixed (RLS, selector) |
+
+---
+
+## Session 4 — April 5, 2026
+
+### Live End-to-End Test: ClickUp → Webhook → Supabase → Dropbox
+
+Moved automation stack from MacBook to Windows 11 desktop. Ran full live test with ClickUp task status change through the entire pipeline.
+
+**Test result:** ClickUp webhook fired → server received → video row created in Supabase → Dropbox folders created at `/austin/RUNNING APP/[FOOTAGE]` and `/[PROJECT]`.
+
+### Bugs Found and Fixed
+
+#### 1. Supabase `videos_status_check` constraint mismatch
+
+**Error:** `new row for relation "videos" violates check constraint "videos_status_check"`
+
+ClickUp sends lowercase statuses (`ready for shooting`) but the Supabase check constraint expects uppercase (`READY FOR SHOOTING`). The DB default was `IDEA` (uppercase).
+
+**Fix:** Added `dbStatus()` helper in `agents/pipeline.js` that uppercases status values before all Supabase writes and queries. ClickUp API calls remain lowercase. Applied to insert (line 145), editor count query (line 253), QA block update (line 310), and footage detected update (line 373).
+
+#### 2. Dropbox `expired_access_token` causing 500 cascade
+
+**Error:** `Dropbox createFolder failed: expired_access_token/`
+
+The long-lived Dropbox access token in `.env` had expired. Every webhook retry hit the same error, compounding with issue #3.
+
+**Fix:** Rewrote `lib/dropbox.js` with auto-refresh on 401. All API calls route through `dropboxFetch()` which retries once with a fresh token obtained via `DROPBOX_REFRESH_TOKEN` + app key/secret. Created `scripts/get-dropbox-token.js` to obtain the refresh token via OAuth flow. Added `DROPBOX_REFRESH_TOKEN` to `.env`.
+
+#### 3. ClickUp webhook retry storm on processing errors
+
+**Error:** ClickUp retried the webhook every ~2 seconds when the handler returned 500, causing 15+ duplicate requests per status change.
+
+**Fix:** `handlers/clickup.js` now returns `200` immediately after signature verification, before any async processing. Errors are logged to `agent_logs` but never propagate back to ClickUp as HTTP errors.
+
+### Infrastructure
+
+| Component | Status |
+|---|---|
+| ngrok | `https://nonhumanistic-rona-bathymetric.ngrok-free.dev` → `localhost:3000` |
+| ClickUp webhook | Active, health reset (was failing with 6 fail count from old MacBook) |
+| PM2 | `limitless-webhooks` running, auto-restart enabled |
+| Dropbox OAuth | Refresh token configured, auto-refresh on 401 |
+| Dashboard | Running on `localhost:5173` via Vite |
+
+### Agent Status Summary
+
+| Agent | Status | Trigger | Notes |
+|---|---|---|---|
+| Pipeline | **Live — e2e tested** | ClickUp webhook | Dropbox folder creation confirmed |
+| QA | **Live** — all 4 checks | "edited" status | Not triggered in this test |
+| Research | Built — needs APIFY_API_TOKEN | Daily 6 AM cron | No changes |
+| Performance | Built — full analysis pipeline | Monday 7 AM cron | No changes |
+| Scripting | **Blocked** — student context under review | — | — |
+| Dashboard | **Live** | localhost:5173 | No changes |
