@@ -31,19 +31,22 @@ function verifySignature(rawBody, signature) {
 }
 
 async function handler(req, res) {
-  try {
-    // Verify webhook signature — skip if secret is not configured
-    const signature = req.headers['x-signature'];
-    const secret = process.env.CLICKUP_WEBHOOK_SECRET;
-    if (secret) {
-      if (!verifySignature(req.rawBody, signature)) {
-        await log({ agent: 'server', action: 'clickup_webhook_rejected', status: 'warning', payload: { reason: 'invalid_signature' } });
-        return res.status(401).json({ error: 'Invalid signature' });
-      }
+  // Verify webhook signature — skip if secret is not configured
+  const signature = req.headers['x-signature'];
+  const secret = process.env.CLICKUP_WEBHOOK_SECRET;
+  if (secret) {
+    if (!verifySignature(req.rawBody, signature)) {
+      await log({ agent: 'server', action: 'clickup_webhook_rejected', status: 'warning', payload: { reason: 'invalid_signature' } });
+      return res.status(401).json({ error: 'Invalid signature' });
     }
+  }
 
-    const { event, task_id: taskId, history_items: historyItems } = req.body;
+  // Acknowledge immediately so ClickUp does not retry on slow/failed processing
+  res.status(200).json({ received: true });
 
+  const { event, task_id: taskId, history_items: historyItems } = req.body;
+
+  try {
     await log({
       agent: 'pipeline',
       action: `clickup_webhook_received: ${event}`,
@@ -71,8 +74,6 @@ async function handler(req, res) {
       default:
         await log({ agent: 'server', action: `clickup_unhandled_event: ${event}`, status: 'warning' });
     }
-
-    res.status(200).json({ received: true });
   } catch (err) {
     await log({
       agent: 'server',
@@ -81,7 +82,6 @@ async function handler(req, res) {
       errorMessage: err.message,
       payload: { stack: err.stack },
     });
-    res.status(500).json({ error: 'Handler failed' });
   }
 }
 

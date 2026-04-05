@@ -16,6 +16,9 @@ const qa = require('./qa');
 
 const AGENT_NAME = 'pipeline';
 
+/** Convert lowercase ClickUp status to uppercase DB format. */
+const dbStatus = (s) => s.toUpperCase();
+
 /**
  * Handle a ClickUp task status change.
  * @param {string} taskId - ClickUp task ID
@@ -139,7 +142,7 @@ async function resolveTask(taskId, campusId) {
       clickup_task_id: taskId,
       title: taskData.name,
       student_name: studentName,
-      status: taskData.status?.status || 'ready for shooting',
+      status: dbStatus(taskData.status?.status || 'ready for shooting'),
     })
     .select('*')
     .single();
@@ -247,7 +250,7 @@ async function assignEditor(taskId, campusId) {
         .from('videos')
         .select('*', { count: 'exact', head: true })
         .eq('assignee_id', editor.id)
-        .eq('status', 'in editing');
+        .eq('status', dbStatus('in editing'));
       return { editor, count: error ? Infinity : count };
     })
   );
@@ -304,7 +307,7 @@ async function triggerQA(taskId, campusId) {
     // Update status in Supabase to reflect the block
     await supabase
       .from('videos')
-      .update({ status: 'waiting', updated_at: new Date().toISOString() })
+      .update({ status: dbStatus('waiting'), updated_at: new Date().toISOString() })
       .eq('id', video.id);
 
     await log({
@@ -367,7 +370,7 @@ async function handleFootageDetected(taskId, campusId) {
   // Update status in Supabase
   const { error: uErr } = await supabase
     .from('videos')
-    .update({ status: 'ready for editing', updated_at: new Date().toISOString() })
+    .update({ status: dbStatus('ready for editing'), updated_at: new Date().toISOString() })
     .eq('id', video.id);
   if (uErr) throw new Error(`Supabase update failed (videos.status): ${uErr.message}`);
 
