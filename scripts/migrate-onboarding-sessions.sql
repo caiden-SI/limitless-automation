@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS onboarding_sessions (
   influencer_transcripts jsonb NOT NULL DEFAULT '[]'::jsonb,
   industry_report text,
   conversation_history jsonb NOT NULL DEFAULT '[]'::jsonb,
+  probed_current boolean NOT NULL DEFAULT false,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
   UNIQUE (student_id, campus_id)

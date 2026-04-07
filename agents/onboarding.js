@@ -94,6 +94,28 @@ const SECTIONS = [
 // Flat list of all questions for index-based navigation
 const ALL_QUESTIONS = SECTIONS.flatMap((s) => s.questions.map((q) => ({ ...q, section: s.id, sectionName: s.name })));
 
+// Words that don't count as a real answer
+const FILLER_WORDS = new Set(['hello', 'hi', 'hey', 'yes', 'no', 'ok', 'okay', 'sure', 'idk', 'yeah', 'nah', 'yep', 'nope', 'thanks', 'thank', 'cool', 'hm', 'hmm', 'lol']);
+
+/**
+ * Check if an answer is too vague to accept.
+ * Returns true if the answer needs probing.
+ */
+function isVagueAnswer(text, question) {
+  if (!text) return true;
+  const trimmed = text.trim();
+  if (trimmed.length < 10) {
+    // Check if it's all filler words
+    const words = trimmed.toLowerCase().split(/\s+/);
+    if (words.every((w) => FILLER_WORDS.has(w.replace(/[^a-z]/g, '')))) {
+      return true;
+    }
+    // Short answers to non-optional questions that aren't yes/no type
+    if (!question.optional && trimmed.length < 5) return true;
+  }
+  return false;
+}
+
 // ---------------------------------------------------------------------------
 // Session management
 // ---------------------------------------------------------------------------
@@ -404,8 +426,18 @@ async function handleMessage({ studentId, campusId, studentName, message }) {
   const history = session.conversation_history || [];
   let questionIndex = session.current_question_index;
 
-  // ------ First message: send greeting, ask first question ------
-  if (history.length === 0 && !message) {
+  // ------ First message or empty message: send greeting ------
+  if (!message) {
+    // If greeting was already sent, return it again (idempotent)
+    if (history.length > 0 && history[0].role === 'assistant') {
+      return {
+        reply: history[0].content,
+        section: session.current_section,
+        isComplete: false,
+        contextDocument: null,
+      };
+    }
+
     const currentQ = ALL_QUESTIONS[0];
     const greeting = `Hey ${studentName}! I'm here to help build your content strategy profile. I'll ask you some questions about your project, your story, and your audience — should take about 15-20 minutes.\n\nLet's start with the basics. What's the name of your brand or project?`;
 
@@ -425,13 +457,38 @@ async function handleMessage({ studentId, campusId, studentName, message }) {
   }
 
   // ------ Record the user's message ------
-  if (message) {
-    history.push({ role: 'user', content: message });
+  history.push({ role: 'user', content: message });
+
+  // ------ Check for vague answer — probe before accepting ------
+  const currentQ = ALL_QUESTIONS[questionIndex];
+  const alreadyProbed = session.probed_current || false;
+
+  if (currentQ && !currentQ.optional && !alreadyProbed && isVagueAnswer(message, currentQ)) {
+    // Ask Claude to probe for a better answer
+    const probePrompt = buildSystemPrompt(studentName, answers, currentQ, currentQ.section);
+    const probeReply = await askConversation({
+      system: probePrompt + '\n\nIMPORTANT: The student just gave a very brief or vague answer. Probe once — ask them to elaborate in a friendly way. Do NOT accept this answer and move on. Say something like "Can you tell me a bit more about that?" or ask a more specific version of the question.',
+      messages: history,
+      maxTokens: 256,
+    });
+
+    history.push({ role: 'assistant', content: probeReply });
+
+    await updateSession(session.id, {
+      conversation_history: history,
+      probed_current: true,
+    });
+
+    return {
+      reply: probeReply,
+      section: currentQ.section,
+      isComplete: false,
+      contextDocument: null,
+    };
   }
 
   // ------ Store the answer for the current question ------
-  const currentQ = ALL_QUESTIONS[questionIndex];
-  if (message && currentQ) {
+  if (currentQ) {
     if (answers[currentQ.key]) {
       answers[currentQ.key] += '\n' + message;
     } else {
@@ -443,7 +500,7 @@ async function handleMessage({ studentId, campusId, studentName, message }) {
   let influencerMessage = '';
   let influencerTranscripts = session.influencer_transcripts || [];
 
-  if (currentQ && currentQ.key === 'influencers' && message) {
+  if (currentQ && currentQ.key === 'influencers') {
     const influencers = parseInfluencers(message);
     if (influencers.length > 0) {
       try {
@@ -498,12 +555,13 @@ async function handleMessage({ studentId, campusId, studentName, message }) {
 
     history.push({ role: 'assistant', content: reply });
 
-    // Persist all state
+    // Persist all state — reset probed flag for next question
     await updateSession(session.id, {
       current_section: nextQ.section,
       current_question_index: nextIndex,
       answers,
       conversation_history: history,
+      probed_current: false,
     });
 
     return {
