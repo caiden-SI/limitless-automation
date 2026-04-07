@@ -299,18 +299,18 @@ async function checkLUFS(video, campusId) {
     return { issues, lufs: null, ffmpegAvailable: false };
   }
 
-  // Check if FFmpeg is available
+  // Check if FFmpeg is available — fail closed if missing
   const ffmpegAvailable = await isFFmpegAvailable();
   if (!ffmpegAvailable) {
     await log({
       campusId,
       agent: AGENT_NAME,
-      action: 'lufs_skipped',
-      status: 'warning',
-      payload: { reason: 'ffmpeg not installed' },
+      action: 'lufs_failed_no_ffmpeg',
+      status: 'error',
+      payload: { reason: 'ffmpeg not installed — LUFS check cannot run, failing closed' },
     });
-    // Not a blocking issue — LUFS check is skipped, not failed
-    return { issues: [], lufs: null, ffmpegAvailable: false };
+    issues.push('LUFS: FFmpeg is not installed — audio loudness check cannot run. Install FFmpeg before QA can pass.');
+    return { issues, lufs: null, ffmpegAvailable: false };
   }
 
   // Get a temporary download link for FFmpeg to read

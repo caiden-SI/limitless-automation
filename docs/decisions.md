@@ -258,3 +258,27 @@ Both set to `active = true`, `campus_id` = Austin campus UUID (`0ba4268f-f010-43
    `setCampusId()` was called during render whenever `campusId` was falsy, which made "All Campuses" mode unreachable and violated React's rules. Moved to a `useEffect` with an `initialized` guard so auto-selection only happens on first load. Selecting "All Campuses" (null) now persists correctly.
 
 **Status:** Done — code changes applied. RLS SQL must be run manually in Supabase SQL Editor.
+
+---
+
+### 2026-04-07 | Codex adversarial review round 2 — 4 fixes applied
+
+**Decision:** Fix all 4 issues identified by the second Codex adversarial review (full repo scan from root commit).
+
+**Findings and changes:**
+
+1. **[CRITICAL] RLS policies replaced with server-side RPC functions** (`scripts/setup-dashboard-rls.sql`)
+   The `campus_id IS NOT NULL` RLS policy did not enforce tenant scoping — any anon client could query all campuses by omitting the filter. Replaced all anon SELECT policies (except campuses) with `SECURITY DEFINER` RPC functions that require a `campus_id` parameter: `get_campus_videos()`, `get_campus_agent_logs()`, `get_campus_editors()`, `get_campus_performance_signals()`. Dashboard hooks updated to call these RPCs instead of querying tables directly. Anon role can no longer SELECT from data tables.
+
+2. **[HIGH] Webhook inbox for durable event processing** (`handlers/clickup.js`, `scripts/migrate-webhook-inbox.sql`)
+   The handler was returning 200 before any durable processing, so failed automations were silently lost with no retry path. Now inserts the raw webhook payload into a `webhook_inbox` table before acknowledging. If the inbox insert fails, returns 500 so ClickUp retries. On processing failure, updates `failed_at` and `error_message` on the inbox row for investigation/replay. On success, sets `processed_at`.
+
+3. **[HIGH] FFmpeg LUFS check fails closed** (`agents/qa.js`, `server.js`)
+   When FFmpeg was missing, the LUFS check returned no issues, allowing videos to pass QA without audio validation. Now returns an explicit error issue (`LUFS: FFmpeg is not installed`) that blocks QA passage. Added FFmpeg availability check to server startup health checks — logs a warning on boot if FFmpeg is missing.
+
+4. **[MEDIUM] Dashboard status casing unified to uppercase** (`dashboard/src/lib/hooks.js`, `dashboard/src/components/PipelineView.jsx`, `dashboard/src/components/QAQueue.jsx`, `dashboard/src/components/EditorCapacity.jsx`)
+   The backend `dbStatus()` writes uppercase statuses to Supabase, but dashboard queries filtered for lowercase. Updated all status constants, filters, and comparisons to uppercase (EDITED, WAITING, IN EDITING, etc.). Added `statusLabel()` helper for display-friendly lowercase rendering in the UI.
+
+**Migration required:** Run `scripts/migrate-webhook-inbox.sql` and `scripts/setup-dashboard-rls.sql` in Supabase SQL Editor.
+
+**Status:** Done.

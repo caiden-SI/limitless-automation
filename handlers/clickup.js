@@ -1,9 +1,13 @@
 // ClickUp webhook handler — receives taskStatusUpdated and taskCreated events.
 // Verifies signature header before processing. Routes to Pipeline Agent.
+//
+// Events are durably recorded in webhook_inbox before returning 200.
+// Processing happens asynchronously. Failures update the inbox row
+// instead of being silently dropped.
 
 const crypto = require('crypto');
+const { supabase } = require('../lib/supabase');
 const { log } = require('../lib/logger');
-const clickup = require('../lib/clickup');
 const pipeline = require('../agents/pipeline');
 
 /**
@@ -41,16 +45,42 @@ async function handler(req, res) {
     }
   }
 
-  // Acknowledge immediately so ClickUp does not retry on slow/failed processing
-  res.status(200).json({ received: true });
-
   const { event, task_id: taskId, history_items: historyItems } = req.body;
 
+  // Durably record the event before acknowledging
+  let inboxId;
+  try {
+    const { data: row, error: insertErr } = await supabase
+      .from('webhook_inbox')
+      .insert({
+        event_type: event || 'unknown',
+        payload: req.body,
+      })
+      .select('id')
+      .single();
+
+    if (insertErr) throw insertErr;
+    inboxId = row.id;
+  } catch (err) {
+    // If inbox insert fails, reject the webhook so ClickUp retries
+    await log({
+      agent: 'server',
+      action: 'webhook_inbox_insert_failed',
+      status: 'error',
+      errorMessage: err.message,
+    });
+    return res.status(500).json({ error: 'Failed to record event' });
+  }
+
+  // Acknowledge — the event is now durable in webhook_inbox
+  res.status(200).json({ received: true });
+
+  // Process asynchronously
   try {
     await log({
       agent: 'pipeline',
       action: `clickup_webhook_received: ${event}`,
-      payload: { taskId, event },
+      payload: { taskId, event, inboxId },
     });
 
     switch (event) {
@@ -74,13 +104,30 @@ async function handler(req, res) {
       default:
         await log({ agent: 'server', action: `clickup_unhandled_event: ${event}`, status: 'warning' });
     }
+
+    // Mark as processed
+    await supabase
+      .from('webhook_inbox')
+      .update({ processed_at: new Date().toISOString() })
+      .eq('id', inboxId);
+
   } catch (err) {
+    // Mark as failed — event is preserved for retry/investigation
+    await supabase
+      .from('webhook_inbox')
+      .update({
+        failed_at: new Date().toISOString(),
+        error_message: err.message,
+        retry_count: 1,
+      })
+      .eq('id', inboxId);
+
     await log({
       agent: 'server',
       action: 'clickup_webhook_error',
       status: 'error',
       errorMessage: err.message,
-      payload: { stack: err.stack },
+      payload: { stack: err.stack, inboxId },
     });
   }
 }

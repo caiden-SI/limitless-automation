@@ -1,44 +1,84 @@
--- RLS policies for dashboard (anon key read access).
+-- RLS policies and RPC functions for dashboard (anon key access).
 -- Run this in the Supabase SQL Editor.
 --
--- These policies scope anon SELECT access by campus_id.
--- The dashboard must always filter by campus_id in queries.
+-- Instead of allowing anon to query tables directly (which cannot enforce
+-- tenant scoping at the policy level), we use RPC functions that require
+-- a campus_id parameter. Anon SELECT policies are removed from data tables.
 -- Service role key (used by agents) bypasses RLS entirely.
---
--- To apply cleanly, drop any previous blanket policies first.
 
--- Drop old blanket policies if they exist
+-- =========================================================================
+-- Step 1: Drop all previous anon policies on data tables
+-- =========================================================================
+
 DROP POLICY IF EXISTS "anon_read_campuses" ON campuses;
 DROP POLICY IF EXISTS "anon_read_videos" ON videos;
 DROP POLICY IF EXISTS "anon_read_editors" ON editors;
 DROP POLICY IF EXISTS "anon_read_agent_logs" ON agent_logs;
 DROP POLICY IF EXISTS "anon_read_performance_signals" ON performance_signals;
 
--- Campuses: allow anon to read active campuses (no cross-tenant risk here)
+-- Campuses: keep anon read — no cross-tenant risk, needed to populate selector
 CREATE POLICY "anon_read_campuses" ON campuses
   FOR SELECT TO anon
   USING (active = true);
 
--- Videos: anon can only read rows matching a campus_id filter
-CREATE POLICY "anon_read_videos" ON videos
-  FOR SELECT TO anon
-  USING (campus_id IS NOT NULL);
+-- No anon SELECT policies on videos, editors, agent_logs, performance_signals.
+-- All dashboard reads go through the RPC functions below.
 
--- Editors: anon can only read active editors scoped by campus_id
-CREATE POLICY "anon_read_editors" ON editors
-  FOR SELECT TO anon
-  USING (active = true AND campus_id IS NOT NULL);
+-- =========================================================================
+-- Step 2: RPC functions — each requires a campus_id parameter
+-- =========================================================================
 
--- Agent logs: anon can only read logs scoped by campus_id
-CREATE POLICY "anon_read_agent_logs" ON agent_logs
-  FOR SELECT TO anon
-  USING (campus_id IS NOT NULL);
+-- Videos scoped to a single campus
+CREATE OR REPLACE FUNCTION get_campus_videos(p_campus_id uuid)
+RETURNS SETOF videos
+LANGUAGE sql SECURITY DEFINER STABLE
+AS $$
+  SELECT * FROM videos
+  WHERE campus_id = p_campus_id
+  ORDER BY updated_at DESC
+  LIMIT 200;
+$$;
 
--- Performance signals: anon can only read signals scoped by campus_id
-CREATE POLICY "anon_read_performance_signals" ON performance_signals
-  FOR SELECT TO anon
-  USING (campus_id IS NOT NULL);
+-- Agent logs scoped to a single campus
+CREATE OR REPLACE FUNCTION get_campus_agent_logs(p_campus_id uuid, p_limit integer DEFAULT 50)
+RETURNS SETOF agent_logs
+LANGUAGE sql SECURITY DEFINER STABLE
+AS $$
+  SELECT * FROM agent_logs
+  WHERE campus_id = p_campus_id
+  ORDER BY created_at DESC
+  LIMIT p_limit;
+$$;
 
--- Also add the unique index for research_library dedup (from previous session)
+-- Editors scoped to a single campus (active only)
+CREATE OR REPLACE FUNCTION get_campus_editors(p_campus_id uuid)
+RETURNS SETOF editors
+LANGUAGE sql SECURITY DEFINER STABLE
+AS $$
+  SELECT * FROM editors
+  WHERE campus_id = p_campus_id AND active = true;
+$$;
+
+-- Performance signals scoped to a single campus
+CREATE OR REPLACE FUNCTION get_campus_performance_signals(p_campus_id uuid, p_limit integer DEFAULT 4)
+RETURNS SETOF performance_signals
+LANGUAGE sql SECURITY DEFINER STABLE
+AS $$
+  SELECT * FROM performance_signals
+  WHERE campus_id = p_campus_id
+  ORDER BY week_of DESC
+  LIMIT p_limit;
+$$;
+
+-- Grant anon the ability to call these functions
+GRANT EXECUTE ON FUNCTION get_campus_videos(uuid) TO anon;
+GRANT EXECUTE ON FUNCTION get_campus_agent_logs(uuid, integer) TO anon;
+GRANT EXECUTE ON FUNCTION get_campus_editors(uuid) TO anon;
+GRANT EXECUTE ON FUNCTION get_campus_performance_signals(uuid, integer) TO anon;
+
+-- =========================================================================
+-- Step 3: Research library unique index (from previous session)
+-- =========================================================================
+
 CREATE UNIQUE INDEX IF NOT EXISTS research_library_campus_url
   ON research_library(campus_id, source_url);

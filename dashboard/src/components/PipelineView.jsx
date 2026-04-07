@@ -1,32 +1,36 @@
 import { useVideos } from '../lib/hooks';
 
+// Statuses stored uppercase in Supabase (via dbStatus() in pipeline agent)
 const STATUS_ORDER = [
-  'idea',
-  'ready for shooting',
-  'ready for editing',
-  'in editing',
-  'edited',
-  'uploaded to dropbox',
-  'sent to client',
-  'revised',
-  'posted by client',
-  'done',
-  'waiting',
+  'IDEA',
+  'READY FOR SHOOTING',
+  'READY FOR EDITING',
+  'IN EDITING',
+  'EDITED',
+  'UPLOADED TO DROPBOX',
+  'SENT TO CLIENT',
+  'REVISED',
+  'POSTED BY CLIENT',
+  'DONE',
+  'WAITING',
 ];
 
 const STATUS_COLORS = {
-  'idea': '#6b7280',
-  'ready for shooting': '#f59e0b',
-  'ready for editing': '#3b82f6',
-  'in editing': '#8b5cf6',
-  'edited': '#06b6d4',
-  'uploaded to dropbox': '#0891b2',
-  'sent to client': '#a855f7',
-  'revised': '#ec4899',
-  'posted by client': '#f97316',
-  'done': '#10b981',
-  'waiting': '#ef4444',
+  'IDEA': '#6b7280',
+  'READY FOR SHOOTING': '#f59e0b',
+  'READY FOR EDITING': '#3b82f6',
+  'IN EDITING': '#8b5cf6',
+  'EDITED': '#06b6d4',
+  'UPLOADED TO DROPBOX': '#0891b2',
+  'SENT TO CLIENT': '#a855f7',
+  'REVISED': '#ec4899',
+  'POSTED BY CLIENT': '#f97316',
+  'DONE': '#10b981',
+  'WAITING': '#ef4444',
 };
+
+/** Display-friendly label for a status (lowercase, title-ish). */
+const statusLabel = (s) => s.toLowerCase();
 
 export default function PipelineView({ campusId }) {
   const { data: videos, loading, error } = useVideos(campusId);
@@ -49,7 +53,7 @@ export default function PipelineView({ campusId }) {
         {STATUS_ORDER.map((status) => (
           <div key={status} className="board-col">
             <div className="board-col-header" style={{ borderTopColor: STATUS_COLORS[status] }}>
-              <span className="board-col-title">{status}</span>
+              <span className="board-col-title">{statusLabel(status)}</span>
               <span className="board-col-count">{columns[status].length}</span>
             </div>
             <div className="board-col-body">
