@@ -577,3 +577,91 @@ The long-lived Dropbox access token in `.env` had expired. Every webhook retry h
 | Performance | Built — full analysis pipeline | Monday 7 AM cron | No changes |
 | Scripting | **Blocked** — student context under review | — | — |
 | Dashboard | **Live** | localhost:5173 | No changes |
+
+---
+
+## Session 5 — April 7, 2026
+
+Switched back to Mac. Pulled Session 4 changes from GitHub. Built the Student Onboarding Agent from spec, ran two rounds of Codex adversarial review, fixed 8 issues total, and live-tested the conversational flow.
+
+### Built — Student Onboarding Agent
+
+**New files:**
+
+- **`agents/onboarding.js`** — Conversational Claude-powered student intake. 6 sections (Business Context, Personal Brand, Industry Authority, Audience, Content Creation, Industry Report). One question at a time, warm/conversational tone. Server-side session state in `onboarding_sessions` table. Apify influencer transcript scraping in Section 3. Automated industry report generation in Section 6. Synthesizes 8-section context document via Claude on completion. Writes to `students.claude_project_context`.
+- **`dashboard/src/pages/Onboarding.jsx`** + **`Onboarding.css`** — Standalone chat UI at `/onboard?student=ID&campus=ID`. Not inside main dashboard nav. Progress indicator (Section X of 6), auto-scroll, typing indicator, completion screen with "Copy Claude Project Context" button and Claude Projects paste instructions.
+- **`scripts/migrate-students-onboarding.sql`** — Added 5 columns to students table: `claude_project_context`, `onboarding_completed_at`, `handle_tiktok`, `handle_instagram`, `handle_youtube`.
+- **`scripts/migrate-onboarding-sessions.sql`** — Server-side session table: `current_section`, `current_question_index`, `answers` (jsonb), `influencer_transcripts` (jsonb), `industry_report`, `conversation_history` (jsonb), `probed_current`.
+- **`scripts/migrate-webhook-inbox.sql`** — Durable webhook event processing table: `event_type`, `payload`, `received_at`, `processed_at`, `failed_at`, `error_message`, `retry_count`.
+- **`scripts/seed-test-student.js`** — Seeds Alex Mathews test student for Austin campus.
+
+**Modified files:**
+
+- **`lib/claude.js`** — Added `askConversation()` for multi-turn message arrays.
+- **`tools/scraper.js`** — Added `scrapeProfileVideos()` for profile-specific Apify scraping (Section 3 influencer transcripts).
+- **`server.js`** — Added `POST /onboarding/message` and `GET /onboarding/student` routes. Completion guard checks `onboarding_completed_at` before processing. FFmpeg startup health check.
+- **`dashboard/src/main.jsx`** — Added react-router-dom, `/onboard` route.
+- **`dashboard/vite.config.js`** — Added proxy `/onboarding` → `localhost:3000`.
+
+**Dependencies added:**
+
+- `react-router-dom` v7.14.0 in dashboard
+
+### Codex Adversarial Review Round 2 — 4 System-Wide Issues Fixed
+
+Full repo scan from root commit. All findings fixed:
+
+| # | Severity | Issue | Fix |
+|---|---|---|---|
+| 1 | CRITICAL | RLS policies `campus_id IS NOT NULL` didn't enforce tenant scoping | Replaced with `SECURITY DEFINER` RPC functions requiring `campus_id` parameter. Anon can no longer SELECT from data tables directly. |
+| 2 | HIGH | Webhook handler returned 200 before durable processing — failed events silently lost | New `webhook_inbox` table. Insert payload before 200. On failure: update `failed_at` + `error_message`. On success: set `processed_at`. |
+| 3 | HIGH | FFmpeg missing → LUFS check returned no issues → videos passed QA without audio validation | LUFS check now fails closed with explicit error. Startup health check logs warning if FFmpeg missing. |
+| 4 | MEDIUM | Dashboard queries used lowercase statuses, backend writes uppercase via `dbStatus()` | All dashboard components updated to uppercase (EDITED, WAITING, IN EDITING, etc.). Added `statusLabel()` for display. |
+
+### Codex Adversarial Review Round 3 — 4 Onboarding Agent Issues Fixed
+
+Focused review on the onboarding agent:
+
+| # | Severity | Issue | Fix |
+|---|---|---|---|
+| 1 | HIGH | Conversation state trusted from client via hidden HTML comments — forgeable | Server-side `onboarding_sessions` table owns all state. Client sends only `{ studentId, campusId, message }`. |
+| 2 | HIGH | Influencer transcripts stored in per-request local variable — lost between requests | Written to `onboarding_sessions.influencer_transcripts` immediately after scraping. |
+| 3 | HIGH | Only LLM-synthesized document persisted — raw answers unrecoverable | Raw answers and full conversation history persisted in session. Context doc is a derived artifact. |
+| 4 | MEDIUM | No completion guard — completed onboarding could be overwritten | POST route checks `onboarding_completed_at` first. Returns existing context if already complete. |
+
+### Live Testing Fixes
+
+Two issues found during manual testing of the onboarding flow:
+
+1. **Auto-greeting** — Greeting now fires automatically on page load via empty POST. Idempotent: returns cached greeting if session already has one.
+2. **Vague answer probing** — Answers under 10 chars or containing only filler words (hello, yes, no, ok, sure, idk) trigger one probe before accepting. Uses `probed_current` flag — probes at most once per question.
+
+### Migrations Run
+
+| Script | Status |
+|---|---|
+| `scripts/migrate-students-onboarding.sql` | Applied |
+| `scripts/migrate-webhook-inbox.sql` | Applied |
+| `scripts/setup-dashboard-rls.sql` (RPC rewrite) | Applied |
+| `scripts/migrate-onboarding-sessions.sql` | Applied |
+| `ALTER TABLE onboarding_sessions ADD COLUMN probed_current` | Applied |
+
+### Agent Status Summary (End of Session 5)
+
+| Agent | Status | Trigger | Notes |
+|---|---|---|---|
+| Pipeline | **Live — e2e tested** | ClickUp webhook | 3 triggers active, done disabled |
+| QA | **Live** — FFmpeg fails closed | "edited" status | LUFS check blocks if FFmpeg missing |
+| Research | Built — needs APIFY_API_TOKEN | Daily 6 AM cron | No changes |
+| Performance | Built — full analysis pipeline | Monday 7 AM cron | No changes |
+| **Onboarding** | **Built — live tested** | `/onboard` URL | Server-side state, vague probing, completion guard |
+| Scripting | **Blocked** — student context under review | — | Unblocked once onboarding populates student context |
+| Dashboard | **Live** — RPC-hardened | localhost:5173 | Anon reads via RPCs, uppercase statuses |
+
+### What's Next
+
+1. Full end-to-end onboarding test with Alex Mathews — complete all 6 sections, verify context document and Supabase writes
+2. Scripting Agent — now unblocked since onboarding agent populates `students.claude_project_context`
+3. Frame.io share link creation (done handler)
+4. Add Fireflies and Apify credentials
+5. Install FFmpeg on Mac Mini for production LUFS checks
