@@ -53,17 +53,17 @@ app.get('/webhooks/dropbox', (req, res) => {
 // Onboarding routes
 app.post('/onboarding/message', async (req, res) => {
   try {
-    const { studentId, campusId, message, conversationHistory } = req.body;
+    const { studentId, campusId, message } = req.body;
 
     if (!studentId || !campusId) {
       return res.status(400).json({ error: 'studentId and campusId are required' });
     }
 
-    // Look up student name
+    // Look up student — check completion guard
     const { supabase } = require('./lib/supabase');
     const { data: student, error: sErr } = await supabase
       .from('students')
-      .select('id, name')
+      .select('id, name, onboarding_completed_at, claude_project_context')
       .eq('id', studentId)
       .eq('campus_id', campusId)
       .maybeSingle();
@@ -73,12 +73,22 @@ app.post('/onboarding/message', async (req, res) => {
       return res.status(404).json({ error: 'Student not found for this campus' });
     }
 
+    // Completion guard: if already onboarded, return existing context
+    if (student.onboarding_completed_at) {
+      return res.json({
+        reply: 'Your context is ready!',
+        section: 6,
+        isComplete: true,
+        contextDocument: student.claude_project_context,
+      });
+    }
+
+    // State lives server-side — client only sends the message
     const result = await onboarding.handleMessage({
       studentId,
       campusId,
       studentName: student.name,
       message: message || '',
-      conversationHistory: conversationHistory || [],
     });
 
     res.json({
@@ -86,7 +96,6 @@ app.post('/onboarding/message', async (req, res) => {
       section: result.section,
       isComplete: result.isComplete,
       contextDocument: result.contextDocument,
-      _rawReply: result._rawReply,
     });
   } catch (err) {
     await log({

@@ -1,7 +1,8 @@
 // Student Onboarding Agent — conversational Claude-powered intake.
 // Replaces Scott's Google Form. Students access via /onboard?student=X&campus=Y.
 //
-// Stateless endpoint: full conversationHistory passed on every request.
+// All conversation state lives server-side in onboarding_sessions table.
+// The client sends only the latest message — state is never trusted from the client.
 // Claude drives the conversation through 6 sections, one question at a time.
 // On completion, synthesizes an 8-section context document and writes to Supabase.
 
@@ -53,7 +54,6 @@ const SECTIONS = [
     questions: [
       { key: 'niche', text: 'Define your niche: Industry + Specialty + Product type + Audience. (Example: Self-improvement dating coaching for teens)' },
       { key: 'influencers', text: 'Who are your 3–5 influencers on your hit list? For each, give the @ handle and a link to their profile.' },
-      // Influencer transcript collection is handled dynamically after 'influencers' is answered
     ],
   },
   {
@@ -91,20 +91,68 @@ const SECTIONS = [
   // Section 6 (Industry Report) is fully automated — no questions for the student.
 ];
 
+// Flat list of all questions for index-based navigation
+const ALL_QUESTIONS = SECTIONS.flatMap((s) => s.questions.map((q) => ({ ...q, section: s.id, sectionName: s.name })));
+
+// ---------------------------------------------------------------------------
+// Session management
+// ---------------------------------------------------------------------------
+
+/**
+ * Get or create an onboarding session for this student+campus.
+ */
+async function getOrCreateSession(studentId, campusId) {
+  const { data: existing, error: qErr } = await supabase
+    .from('onboarding_sessions')
+    .select('*')
+    .eq('student_id', studentId)
+    .eq('campus_id', campusId)
+    .maybeSingle();
+
+  if (qErr) throw new Error(`Session query failed: ${qErr.message}`);
+  if (existing) return existing;
+
+  const { data: created, error: iErr } = await supabase
+    .from('onboarding_sessions')
+    .insert({
+      student_id: studentId,
+      campus_id: campusId,
+      current_section: 1,
+      current_question_index: 0,
+      answers: {},
+      influencer_transcripts: [],
+      conversation_history: [],
+    })
+    .select('*')
+    .single();
+
+  if (iErr) throw new Error(`Session create failed: ${iErr.message}`);
+  return created;
+}
+
+/**
+ * Update session state in Supabase.
+ */
+async function updateSession(sessionId, updates) {
+  const { error } = await supabase
+    .from('onboarding_sessions')
+    .update({ ...updates, updated_at: new Date().toISOString() })
+    .eq('id', sessionId);
+
+  if (error) throw new Error(`Session update failed: ${error.message}`);
+}
+
 // ---------------------------------------------------------------------------
 // System prompt
 // ---------------------------------------------------------------------------
 
-function buildSystemPrompt(studentName, answeredKeys, currentSection, currentQuestionKey, influencerTranscripts) {
+function buildSystemPrompt(studentName, answers, currentQuestion, currentSection) {
+  const answeredKeys = new Set(Object.keys(answers));
   const sectionList = SECTIONS.map((s) => {
     const answeredInSection = s.questions.filter((q) => answeredKeys.has(q.key));
     const mark = answeredInSection.length === s.questions.length ? '✓' : `${answeredInSection.length}/${s.questions.length}`;
     return `  Section ${s.id}: ${s.name} [${mark}]`;
   }).join('\n');
-
-  const influencerNote = influencerTranscripts.length > 0
-    ? `\nInfluencer transcripts already collected: ${influencerTranscripts.length}`
-    : '';
 
   return `You are a friendly onboarding assistant for Limitless Media Agency. You are helping ${studentName} build their content strategy context document.
 
@@ -112,9 +160,12 @@ Your job is to collect information through natural conversation — one question
 
 PROGRESS:
 ${sectionList}
-Currently on: Section ${currentSection}${influencerNote}
+Currently on: Section ${currentSection}
 
-CURRENT QUESTION KEY: ${currentQuestionKey}
+THE QUESTION YOU NEED TO ASK OR FOLLOW UP ON:
+Key: ${currentQuestion.key}
+Text: ${currentQuestion.text}
+${currentQuestion.optional ? '(This question is optional — skip gracefully if they say they don\'t have it)' : ''}
 
 RULES:
 - Ask ONE question at a time. Never dump multiple questions.
@@ -127,92 +178,7 @@ RULES:
 - When transitioning between sections, give a brief encouraging note like "Great, that wraps up the business context! Now let's talk about your personal brand."
 - Do NOT explain the overall process or how many sections there are unless the student asks.
 - Do NOT say "Question 3 of 12" or anything like that — just ask naturally.
-
-IMPORTANT: End every message with a hidden state comment on its own line in exactly this format:
-<!-- STATE:{"section":SECTION_NUMBER,"questionKey":"CURRENT_KEY"} -->
-
-The questionKey should be the key of the question you just asked or are waiting for an answer to. If you just received the answer to the current question, set questionKey to the NEXT unanswered question's key. If the current section is complete, set the section number to the next section and questionKey to its first question's key.`;
-}
-
-// ---------------------------------------------------------------------------
-// State parsing
-// ---------------------------------------------------------------------------
-
-const STATE_RE = /<!-- STATE:\s*(\{[^}]+\})\s*-->/;
-
-/**
- * Parse the hidden state comment from the last assistant message.
- * Returns { section, questionKey } or null if not found.
- */
-function parseState(conversationHistory) {
-  for (let i = conversationHistory.length - 1; i >= 0; i--) {
-    if (conversationHistory[i].role === 'assistant') {
-      const match = conversationHistory[i].content.match(STATE_RE);
-      if (match) {
-        try { return JSON.parse(match[1]); } catch { return null; }
-      }
-    }
-  }
-  return null;
-}
-
-/**
- * Extract all answered question keys from conversation history.
- * Scans assistant state comments to build the set of keys that have been
- * moved past (i.e., the questionKey advanced beyond them).
- */
-function extractAnsweredKeys(conversationHistory) {
-  const keys = new Set();
-  const allKeys = SECTIONS.flatMap((s) => s.questions.map((q) => q.key));
-  let lastKey = null;
-
-  for (const msg of conversationHistory) {
-    if (msg.role === 'assistant') {
-      const match = msg.content.match(STATE_RE);
-      if (match) {
-        try {
-          const state = JSON.parse(match[1]);
-          // If the key changed, the previous key was answered
-          if (lastKey && state.questionKey !== lastKey) {
-            keys.add(lastKey);
-          }
-          lastKey = state.questionKey;
-        } catch { /* skip malformed */ }
-      }
-    }
-  }
-
-  // Also mark all keys before the current key's position as answered
-  if (lastKey) {
-    const idx = allKeys.indexOf(lastKey);
-    if (idx > 0) {
-      for (let i = 0; i < idx; i++) keys.add(allKeys[i]);
-    }
-  }
-
-  return keys;
-}
-
-/**
- * Determine the next unanswered question key after the given key.
- */
-function nextQuestionKey(currentKey) {
-  const allQuestions = SECTIONS.flatMap((s) => s.questions);
-  const idx = allQuestions.findIndex((q) => q.key === currentKey);
-  if (idx >= 0 && idx < allQuestions.length - 1) {
-    return allQuestions[idx + 1].key;
-  }
-  return null; // conversation complete (all student-facing questions done)
-}
-
-/**
- * Get section number for a question key.
- */
-function sectionForKey(key) {
-  for (const s of SECTIONS) {
-    if (s.questions.some((q) => q.key === key)) return s.id;
-  }
-  return 5; // default to last student-facing section
+- Do NOT include any hidden comments, state markers, or metadata in your response. Just write your conversational message.`;
 }
 
 // ---------------------------------------------------------------------------
@@ -221,7 +187,6 @@ function sectionForKey(key) {
 
 /**
  * Parse influencer handles/URLs from the student's answer.
- * Returns [{ handle, url, platform }]
  */
 function parseInfluencers(text) {
   const influencers = [];
@@ -250,7 +215,7 @@ function parseInfluencers(text) {
 }
 
 /**
- * Attempt to scrape transcripts for each influencer. Returns results array.
+ * Attempt to scrape transcripts for each influencer.
  */
 async function fetchInfluencerTranscripts(influencers, campusId) {
   const results = [];
@@ -298,7 +263,7 @@ async function generateIndustryReport(niche, influencerHandles) {
     ? `Key influencers in this space: ${influencerHandles.join(', ')}`
     : '';
 
-  const report = await ask({
+  return ask({
     system: 'You are a market research analyst. Write a concise industry report (400-600 words) in markdown format.',
     prompt: `Write an industry report for this niche: "${niche}"
 
@@ -313,8 +278,6 @@ Cover these four areas:
 Be specific and actionable. Use real industry context where possible.`,
     maxTokens: 1500,
   });
-
-  return report;
 }
 
 // ---------------------------------------------------------------------------
@@ -391,7 +354,6 @@ On-camera comfort assessment based on their answers, optimal content approach (2
 
 async function writeToSupabase({ studentId, campusId, contextDocument, answers }) {
   const handles = {};
-  // Extract social handles from answers if mentioned
   const allText = Object.values(answers).join(' ');
   const tiktokMatch = allText.match(/@([\w.]+).*tiktok/i) || allText.match(/tiktok.*@([\w.]+)/i);
   const igMatch = allText.match(/@([\w.]+).*instagram/i) || allText.match(/instagram.*@([\w.]+)/i);
@@ -426,49 +388,69 @@ async function writeToSupabase({ studentId, campusId, contextDocument, answers }
 
 /**
  * Handle a single message in the onboarding conversation.
+ * State is read from and written to onboarding_sessions — never from the client.
+ *
  * @param {object} params
  * @param {string} params.studentId - Student UUID
  * @param {string} params.campusId - Campus UUID
  * @param {string} params.studentName - Student display name
  * @param {string} params.message - Latest user message (empty string for initial greeting)
- * @param {Array<{role: string, content: string}>} params.conversationHistory - Full history
  * @returns {{ reply: string, section: number, isComplete: boolean, contextDocument: string|null }}
  */
-async function handleMessage({ studentId, campusId, studentName, message, conversationHistory }) {
+async function handleMessage({ studentId, campusId, studentName, message }) {
+  // Load or create server-side session
+  const session = await getOrCreateSession(studentId, campusId);
+  const answers = session.answers || {};
+  const history = session.conversation_history || [];
+  let questionIndex = session.current_question_index;
+
   // ------ First message: send greeting, ask first question ------
-  if (conversationHistory.length === 0) {
-    const greeting = `Hey ${studentName}! 👋 I'm here to help build your content strategy profile. I'll ask you some questions about your project, your story, and your audience — should take about 15-20 minutes.\n\nLet's start with the basics. What's the name of your brand or project?\n\n<!-- STATE:{"section":1,"questionKey":"brand_name"} -->`;
+  if (history.length === 0 && !message) {
+    const currentQ = ALL_QUESTIONS[0];
+    const greeting = `Hey ${studentName}! I'm here to help build your content strategy profile. I'll ask you some questions about your project, your story, and your audience — should take about 15-20 minutes.\n\nLet's start with the basics. What's the name of your brand or project?`;
+
+    const newHistory = [{ role: 'assistant', content: greeting }];
+    await updateSession(session.id, {
+      conversation_history: newHistory,
+      current_section: currentQ.section,
+      current_question_index: 0,
+    });
+
     return {
-      reply: stripStateComment(greeting),
-      section: 1,
+      reply: greeting,
+      section: currentQ.section,
       isComplete: false,
       contextDocument: null,
-      _rawReply: greeting,
     };
   }
 
-  // ------ Parse current state ------
-  const state = parseState(conversationHistory);
-  const answeredKeys = extractAnsweredKeys(conversationHistory);
-  const currentSection = state ? state.section : 1;
-  const currentKey = state ? state.questionKey : 'brand_name';
-
-  // Build messages array for Claude (include new user message)
-  const messages = [...conversationHistory];
+  // ------ Record the user's message ------
   if (message) {
-    messages.push({ role: 'user', content: message });
+    history.push({ role: 'user', content: message });
   }
 
-  // ------ Check if influencers were just answered (Section 3 scraping) ------
-  let influencerResults = [];
+  // ------ Store the answer for the current question ------
+  const currentQ = ALL_QUESTIONS[questionIndex];
+  if (message && currentQ) {
+    if (answers[currentQ.key]) {
+      answers[currentQ.key] += '\n' + message;
+    } else {
+      answers[currentQ.key] = message;
+    }
+  }
+
+  // ------ Handle influencer scraping (Section 3) ------
   let influencerMessage = '';
-  if (currentKey === 'influencers' && message) {
+  let influencerTranscripts = session.influencer_transcripts || [];
+
+  if (currentQ && currentQ.key === 'influencers' && message) {
     const influencers = parseInfluencers(message);
     if (influencers.length > 0) {
       try {
-        influencerResults = await fetchInfluencerTranscripts(influencers, campusId);
-        const succeeded = influencerResults.filter((r) => r.success);
-        const failed = influencerResults.filter((r) => !r.success);
+        const results = await fetchInfluencerTranscripts(influencers, campusId);
+        influencerTranscripts = results;
+        const succeeded = results.filter((r) => r.success);
+        const failed = results.filter((r) => !r.success);
 
         if (succeeded.length > 0) {
           influencerMessage = `I was able to pull transcripts for ${succeeded.map((r) => '@' + r.handle).join(', ')}. `;
@@ -476,6 +458,11 @@ async function handleMessage({ studentId, campusId, studentName, message, conver
         if (failed.length > 0) {
           influencerMessage += `I wasn't able to grab content from ${failed.map((r) => '@' + r.handle).join(', ')} automatically. If you have any transcript text from them, feel free to paste it. Otherwise, no worries — we can move on.`;
         }
+
+        // Persist influencer transcripts immediately
+        await updateSession(session.id, {
+          influencer_transcripts: influencerTranscripts,
+        });
       } catch (err) {
         await log({
           campusId,
@@ -488,67 +475,56 @@ async function handleMessage({ studentId, campusId, studentName, message, conver
     }
   }
 
-  // ------ Check if all student-facing questions are done ------
-  // All questions across sections 1-5 answered = conversation complete
-  const allQuestionKeys = SECTIONS.flatMap((s) => s.questions.map((q) => q.key));
-  const requiredKeys = SECTIONS.flatMap((s) => s.questions.filter((q) => !q.optional).map((q) => q.key));
+  // ------ Advance to next question ------
+  const nextIndex = questionIndex + 1;
+  const isComplete = nextIndex >= ALL_QUESTIONS.length;
 
-  // If current key is null or we've answered the last key, we're done
-  const lastKey = allQuestionKeys[allQuestionKeys.length - 1];
-  const isLastAnswer = currentKey === lastKey;
+  if (!isComplete) {
+    const nextQ = ALL_QUESTIONS[nextIndex];
 
-  // Let Claude handle the conversation turn
-  const systemPrompt = buildSystemPrompt(
-    studentName,
-    answeredKeys,
-    currentSection,
-    currentKey,
-    influencerResults.filter((r) => r.success),
-  );
+    // Build system prompt with server-side state
+    const systemPrompt = buildSystemPrompt(studentName, answers, nextQ, nextQ.section);
 
-  // If we have an influencer message, inject it as context
-  if (influencerMessage) {
-    messages.push({
-      role: 'assistant',
-      content: influencerMessage,
+    // If we have an influencer scrape message, inject it before Claude's turn
+    if (influencerMessage) {
+      history.push({ role: 'assistant', content: influencerMessage });
+    }
+
+    const reply = await askConversation({
+      system: systemPrompt,
+      messages: history,
+      maxTokens: 512,
     });
+
+    history.push({ role: 'assistant', content: reply });
+
+    // Persist all state
+    await updateSession(session.id, {
+      current_section: nextQ.section,
+      current_question_index: nextIndex,
+      answers,
+      conversation_history: history,
+    });
+
+    return {
+      reply,
+      section: nextQ.section,
+      isComplete: false,
+      contextDocument: null,
+    };
   }
 
-  const rawReply = await askConversation({
-    system: systemPrompt,
-    messages,
-    maxTokens: 512,
-  });
+  // ------ All questions complete — generate outputs ------
 
-  // Parse the new state from Claude's response
-  const newState = (() => {
-    const match = rawReply.match(STATE_RE);
-    if (match) {
-      try { return JSON.parse(match[1]); } catch { return null; }
-    }
-    return null;
-  })();
-
-  const newSection = newState ? newState.section : currentSection;
-  const newKey = newState ? newState.questionKey : currentKey;
-
-  // Check if conversation is complete
-  // Complete when: the new state indicates we've gone past the last question
-  const isComplete = newKey === null || newKey === 'COMPLETE' || (answeredKeys.size >= requiredKeys.length - 1 && isLastAnswer);
-
-  let contextDocument = null;
-
-  if (isComplete) {
-    // Collect all answers from conversation
-    const answers = extractAllAnswers(messages, rawReply);
-
-    // Generate industry report (Section 6 — automated)
-    let industryReport = '';
+  // Generate industry report (Section 6 — automated)
+  let industryReport = session.industry_report || '';
+  if (!industryReport) {
     try {
       industryReport = await generateIndustryReport(
         answers.niche || '',
-        influencerResults.map((r) => r.handle),
+        influencerTranscripts.filter((r) => r.success).map((r) => r.handle),
       );
+      await updateSession(session.id, { industry_report: industryReport });
     } catch (err) {
       await log({
         campusId,
@@ -559,68 +535,32 @@ async function handleMessage({ studentId, campusId, studentName, message, conver
       });
       industryReport = 'Industry report generation failed.';
     }
-
-    // Synthesize context document
-    contextDocument = await synthesizeContextDocument(
-      studentName,
-      answers,
-      influencerResults,
-      industryReport,
-    );
-
-    // Write to Supabase
-    await writeToSupabase({ studentId, campusId, contextDocument, answers });
   }
+
+  // Synthesize context document from persisted data
+  const contextDocument = await synthesizeContextDocument(
+    studentName,
+    answers,
+    influencerTranscripts,
+    industryReport,
+  );
+
+  // Write to students table
+  await writeToSupabase({ studentId, campusId, contextDocument, answers });
+
+  // Final session update
+  await updateSession(session.id, {
+    answers,
+    conversation_history: history,
+    industry_report: industryReport,
+  });
 
   return {
-    reply: stripStateComment(rawReply),
-    section: newSection,
-    isComplete,
+    reply: 'Your context is ready!',
+    section: 6,
+    isComplete: true,
     contextDocument,
-    _rawReply: rawReply,
   };
-}
-
-/**
- * Extract all answers from the full conversation by pairing user messages
- * with the question keys that were active when they responded.
- */
-function extractAllAnswers(messages, finalReply) {
-  const answers = {};
-  const allKeys = SECTIONS.flatMap((s) => s.questions.map((q) => q.key));
-  let currentKey = 'brand_name';
-
-  for (let i = 0; i < messages.length; i++) {
-    const msg = messages[i];
-
-    if (msg.role === 'assistant') {
-      const match = msg.content.match(STATE_RE);
-      if (match) {
-        try {
-          const state = JSON.parse(match[1]);
-          currentKey = state.questionKey;
-        } catch { /* skip */ }
-      }
-    }
-
-    if (msg.role === 'user' && currentKey) {
-      // If we already have this key, append (handles follow-ups / multi-message answers)
-      if (answers[currentKey]) {
-        answers[currentKey] += '\n' + msg.content;
-      } else {
-        answers[currentKey] = msg.content;
-      }
-    }
-  }
-
-  return answers;
-}
-
-/**
- * Strip the hidden state comment from a reply before sending to the client.
- */
-function stripStateComment(text) {
-  return text.replace(/\n?<!-- STATE:\s*\{[^}]+\}\s*-->\s*$/, '').trim();
 }
 
 module.exports = { handleMessage };

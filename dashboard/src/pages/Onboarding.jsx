@@ -12,9 +12,8 @@ export default function Onboarding() {
   const [studentName, setStudentName] = useState(null);
   const [loadError, setLoadError] = useState(null);
 
-  // Chat state
-  const [messages, setMessages] = useState([]);           // display messages
-  const [conversationHistory, setConversationHistory] = useState([]); // raw history with state comments
+  // Chat state — display only. Server owns the real conversation state.
+  const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [section, setSection] = useState(1);
@@ -25,7 +24,6 @@ export default function Onboarding() {
   const [copied, setCopied] = useState(false);
 
   const messagesEndRef = useRef(null);
-  const textareaRef = useRef(null);
 
   // Scroll to bottom on new messages
   useEffect(() => {
@@ -64,15 +62,10 @@ export default function Onboarding() {
 
   async function sendMessage(text) {
     // Add user message to display (skip for initial greeting)
-    const newDisplayMessages = text
+    const newMessages = text
       ? [...messages, { role: 'user', content: text }]
       : [...messages];
-    setMessages(newDisplayMessages);
-
-    const newHistory = text
-      ? [...conversationHistory, { role: 'user', content: text }]
-      : [...conversationHistory];
-
+    setMessages(newMessages);
     setInput('');
     setLoading(true);
 
@@ -84,7 +77,6 @@ export default function Onboarding() {
           studentId,
           campusId,
           message: text,
-          conversationHistory: newHistory,
         }),
       });
 
@@ -95,13 +87,7 @@ export default function Onboarding() {
 
       const data = await res.json();
 
-      // Update display messages with assistant reply
-      setMessages([...newDisplayMessages, { role: 'assistant', content: data.reply }]);
-
-      // Update conversation history with raw reply (includes state comments)
-      const rawReply = data._rawReply || data.reply;
-      setConversationHistory([...newHistory, { role: 'assistant', content: rawReply }]);
-
+      setMessages([...newMessages, { role: 'assistant', content: data.reply }]);
       if (data.section) setSection(data.section);
 
       if (data.isComplete && data.contextDocument) {
@@ -110,7 +96,7 @@ export default function Onboarding() {
       }
     } catch (err) {
       setMessages([
-        ...newDisplayMessages,
+        ...newMessages,
         { role: 'assistant', content: `Something went wrong: ${err.message}. Try sending your message again.` },
       ]);
     } finally {
@@ -138,7 +124,6 @@ export default function Onboarding() {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch {
-      // Fallback for older browsers
       const textarea = document.createElement('textarea');
       textarea.value = contextDocument;
       document.body.appendChild(textarea);
@@ -150,7 +135,6 @@ export default function Onboarding() {
     }
   }
 
-  // Auto-resize textarea
   function handleInputChange(e) {
     setInput(e.target.value);
     const el = e.target;
@@ -216,7 +200,6 @@ export default function Onboarding() {
 
       <form className="input-bar" onSubmit={handleSubmit}>
         <textarea
-          ref={textareaRef}
           value={input}
           onChange={handleInputChange}
           onKeyDown={handleKeyDown}

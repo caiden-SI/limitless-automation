@@ -282,3 +282,29 @@ Both set to `active = true`, `campus_id` = Austin campus UUID (`0ba4268f-f010-43
 **Migration required:** Run `scripts/migrate-webhook-inbox.sql` and `scripts/setup-dashboard-rls.sql` in Supabase SQL Editor.
 
 **Status:** Done.
+
+---
+
+### 2026-04-07 | Onboarding agent: server-side session state (Codex adversarial review round 3)
+
+**Decision:** Move all onboarding conversation state from client-supplied hidden HTML comments to a server-side `onboarding_sessions` table. Fix 4 issues identified by focused Codex adversarial review of the onboarding agent.
+
+**Findings and changes:**
+
+1. **[HIGH] Server-side session state replaces client-trusted hidden comments** (`agents/onboarding.js`, `scripts/migrate-onboarding-sessions.sql`)
+   The original design embedded state in `<!-- STATE:{...} -->` HTML comments in assistant messages, passed back by the client on every request. A caller could forge state to skip sections, corrupt answer mapping, or force premature completion. Now all state lives in `onboarding_sessions` table: `current_section`, `current_question_index`, `answers` (jsonb), `influencer_transcripts` (jsonb), `industry_report`, `conversation_history` (jsonb). The client sends only `{ studentId, campusId, message }` — state is never read from or trusted from the client. Session is looked up by `student_id + campus_id` (unique constraint).
+
+2. **[HIGH] Influencer transcripts persisted to session immediately** (`agents/onboarding.js`)
+   Previously, `influencerResults` was a per-request local variable — populated only on the turn where `currentKey === 'influencers'`, then lost on the next request. The Apify-scraped transcripts were never available for final synthesis. Now `fetchInfluencerTranscripts()` results are written to `onboarding_sessions.influencer_transcripts` immediately after scraping. Synthesis reads from the persisted session column.
+
+3. **[HIGH] Raw answers persisted after each turn** (`agents/onboarding.js`)
+   Previously, answers were extracted from conversation history by parsing hidden state comments — fragile and client-dependent. Now each answer is written to `onboarding_sessions.answers` (jsonb key-value map) on every turn. Synthesis reads from this persisted object. The full conversation history is also persisted as an audit trail alongside the synthesized document.
+
+4. **[MEDIUM] Completion guard on POST route** (`server.js`)
+   The POST route now checks `students.onboarding_completed_at` before processing. If already set, returns `{ isComplete: true, contextDocument: existing claude_project_context }` immediately without reprocessing. Prevents overwrite of completed onboarding data.
+
+**Architecture change:** The onboarding agent is no longer stateless. The `POST /onboarding/message` endpoint no longer accepts `conversationHistory` from the client. The React frontend sends only `{ studentId, campusId, message }` and displays messages locally for UX, but all authoritative state is server-side.
+
+**Migration required:** Run `scripts/migrate-onboarding-sessions.sql` in Supabase SQL Editor.
+
+**Status:** Done.
