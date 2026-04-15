@@ -86,6 +86,7 @@ const SECTIONS = [
       { key: 'content_pillars', text: 'What types of content would showcase your project best? Pick all that apply: Product demos/tutorials, Behind-the-scenes of building, User testimonials/reactions, My personal story/journey, Educational content in my niche.' },
       { key: 'creator_references', text: 'Who are some content creators you like watching? These are just style references — accounts or creator names.' },
       { key: 'topics_to_avoid', text: 'Are there any topics you completely avoid posting about?' },
+      { key: 'student_handles', text: 'What are your social handles? Share your TikTok, Instagram, or YouTube @ handles or profile URLs so we can track your content performance.', optional: true },
     ],
   },
   // Section 6 (Industry Report) is fully automated — no questions for the student.
@@ -410,7 +411,7 @@ async function writeToSupabase({ studentId, campusId, contextDocument, answers }
  * below so a future contributor does not accidentally include them.
  */
 const STUDENT_HANDLE_KEYS = [
-  // Add student-owned-handle question keys here once a dedicated question exists.
+  'student_handles', // Section 5: asks the student directly for their own TikTok/Instagram/YouTube handles.
 ];
 
 /**
