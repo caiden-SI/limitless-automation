@@ -123,29 +123,18 @@ None.
 
 ## Delivered beyond scope
 
-The SOW Section 3 deliverables are source code, recording, documentation, and acceptance. Four additions were built with Scott's approval during Phase 1 without a contract amendment:
+The SOW Section 3 deliverables are source code, recording, documentation, and acceptance. Two additions were built with Scott's approval during Phase 1 without a contract amendment:
 
-1. **Student Onboarding Agent**
-   - What: agent that populates `students.claude_project_context` from an intake form, so the Scripting Agent has clean context to work with going forward.
+1. **Student Onboarding Agent** (`agents/onboarding.js`, `dashboard/src/pages/Onboarding.jsx`)
+   - What: conversational Claude-powered intake at `/onboard?student=ID&campus=ID`. Six sections, server-side state in `onboarding_sessions`, synthesizes the 8-section context document and writes to `students.claude_project_context`.
    - Why: the blocker documented in `docs/decisions.md` 2026-04-02 (Scripting Agent blocked on student context approach) is resolved by this agent. Without it, every new student requires manual context entry before the Scripting Agent can generate usable concepts.
+   - Status: built and live tested in Session 5. Hardened across two Codex adversarial review rounds (Round 2 system-wide, Round 3 onboarding-focused).
    - Scope note: does not backfill existing students. Manual backfill is a one-time task, not automated.
 
-2. **Content Performance Agent**
-   - What: weekly analysis of view counts and transcripts across the last 4 weeks, outputs `performance_signals` for the Scripting Agent to consume.
-   - Why: the SOW describes Performance Pattern Analysis as an "Intelligence Agent" but does not specify the weekly cadence, the signal shape, or the Claude-driven pattern recognition. The delivered agent goes deeper than the SOW wording required.
-   - Status: live, running every Monday at 7 AM per Session 2 build.
-
-3. **Pipeline Age Dashboard View**
-   - What: a dashboard view showing how long each video has been stuck in its current status.
-   - Why: Scott's bottleneck identification was manual: scan the kanban, remember when things moved. The age view makes stale videos visible at a glance.
-   - Implementation note: this is a dashboard component (React) reading from `videos.updated_at` filtered by `status`. No new agent, no new table.
-
-4. **Webhook Inbox Table**
-   - What: a Supabase table that logs every inbound webhook (ClickUp, Dropbox, Frame.io) with the raw payload and verification status.
-   - Why: two benefits. First, failed processing can be replayed against a later fixed handler without losing events. Second, a new agent or handler can backfill historical signal from past webhooks instead of starting from the day it ships.
-   - Status: TODO verify with Caiden whether this has been implemented yet. If not, implement before handoff or remove from this list.
-
-TODO: verify with Caiden before build. Confirm that all four additions above are actually delivered at handoff time. If any are planned but not built, move them out of this list and into a separate "planned follow-up" section so the acceptance email is not inaccurate.
+2. **Webhook Inbox Table and durable processing pattern** (`scripts/migrate-webhook-inbox.sql`, `handlers/clickup.js`)
+   - What: a Supabase table that logs every inbound ClickUp webhook with raw payload, plus a durable processing pattern. Events are persisted to `webhook_inbox` before the 200 acknowledgment. Async processing then marks `processed_at` on success or `failed_at` + `error_message` + `retry_count` on failure. Failed events can be replayed.
+   - Why: a significant reliability improvement not described in SOW Section 2. Previously, failed processing meant silently dropped events. Now every webhook is durable, every failure is inspectable, and replay is possible without coordinating with ClickUp.
+   - Status: built and live in Session 5 (Codex Round 2 fix). ClickUp handler is wired. Dropbox and Frame.io handlers do not yet write to the inbox; that gap is tracked in `docs/architecture.md` TODOs.
 
 ## Outputs
 

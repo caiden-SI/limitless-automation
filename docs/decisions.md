@@ -308,3 +308,15 @@ Both set to `active = true`, `campus_id` = Austin campus UUID (`0ba4268f-f010-43
 **Migration required:** Run `scripts/migrate-onboarding-sessions.sql` in Supabase SQL Editor.
 
 **Status:** Done.
+
+---
+
+### 2026-04-15 | Onboarding URL auth deferred to retainer or Phase 2
+
+**Decision:** Ship Phase 1 with the invite-link trust model. Scott sends each student a unique `/onboard?student=ID&campus=ID` URL. Anyone holding the link can impersonate that student. Add per-session signed tokens during retainer month one or Phase 2 if the threat model changes.
+
+**Rationale:** The `/onboarding/message` endpoint accepts any well-formed `(studentId, campusId)` UUID pair. Server-side `onboarding_sessions` owns conversation state (closed via Session 5 Codex Round 3 issue #1), so a forged caller cannot tamper with the state shape. They can still pollute an in-progress conversation if they hold the URL. The completion guard prevents overwrite of finished onboardings, so blast radius is bounded to the in-flight session window.
+
+**Mitigation:** Document in the Section 4 handoff notes so Scott knows before sharing onboarding links. No code changes in Phase 1.
+
+**Status:** Deferred. Revisit during retainer month one or in Phase 2 SOW.
