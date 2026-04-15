@@ -41,60 +41,50 @@ export function useCampuses() {
   60000);
 }
 
-/** Fetch videos for a campus, ordered by updated_at desc. */
+/** Fetch videos for a campus via RPC (enforces tenant scoping). */
 export function useVideos(campusId) {
   return useSupabaseQuery('videos', (sb) => {
-    let q = sb.from('videos').select('*').order('updated_at', { ascending: false }).limit(100);
-    if (campusId) q = q.eq('campus_id', campusId);
-    return q;
+    if (!campusId) return sb.from('videos').select('*').limit(0);
+    return sb.rpc('get_campus_videos', { p_campus_id: campusId });
   }, 15000);
 }
 
-/** Fetch recent agent logs. */
+/** Fetch recent agent logs via RPC. */
 export function useAgentLogs(campusId, limit = 50) {
   return useSupabaseQuery('agent_logs', (sb) => {
-    let q = sb.from('agent_logs').select('*').order('created_at', { ascending: false }).limit(limit);
-    if (campusId) q = q.eq('campus_id', campusId);
-    return q;
+    if (!campusId) return sb.from('agent_logs').select('*').limit(0);
+    return sb.rpc('get_campus_agent_logs', { p_campus_id: campusId, p_limit: limit });
   }, 10000);
 }
 
 /** Fetch videos needing QA (qa_passed is null or false). */
 export function useQAQueue(campusId) {
   return useSupabaseQuery('qa_queue', (sb) => {
-    let q = sb.from('videos').select('*')
-      .in('status', ['edited', 'waiting'])
-      .order('updated_at', { ascending: false });
-    if (campusId) q = q.eq('campus_id', campusId);
-    return q;
+    if (!campusId) return sb.from('videos').select('*').limit(0);
+    return sb.rpc('get_campus_videos', { p_campus_id: campusId });
   }, 15000);
 }
 
-/** Fetch editors with their active task counts. */
+/** Fetch editors via RPC. */
 export function useEditors(campusId) {
   return useSupabaseQuery('editors', (sb) => {
-    let q = sb.from('editors').select('*').eq('active', true);
-    if (campusId) q = q.eq('campus_id', campusId);
-    return q;
+    if (!campusId) return sb.from('editors').select('*').limit(0);
+    return sb.rpc('get_campus_editors', { p_campus_id: campusId });
   }, 30000);
 }
 
-/** Fetch active video count per editor. */
+/** Fetch active video count per editor via RPC. */
 export function useEditorCounts(campusId) {
   return useSupabaseQuery('editor_counts', (sb) => {
-    let q = sb.from('videos').select('assignee_id, status')
-      .eq('status', 'in editing');
-    if (campusId) q = q.eq('campus_id', campusId);
-    return q;
+    if (!campusId) return sb.from('videos').select('*').limit(0);
+    return sb.rpc('get_campus_videos', { p_campus_id: campusId });
   }, 15000);
 }
 
-/** Fetch latest performance signals. */
+/** Fetch latest performance signals via RPC. */
 export function usePerformanceSignals(campusId, limit = 4) {
   return useSupabaseQuery('performance_signals', (sb) => {
-    let q = sb.from('performance_signals').select('*')
-      .order('week_of', { ascending: false }).limit(limit);
-    if (campusId) q = q.eq('campus_id', campusId);
-    return q;
+    if (!campusId) return sb.from('performance_signals').select('*').limit(0);
+    return sb.rpc('get_campus_performance_signals', { p_campus_id: campusId, p_limit: limit });
   }, 60000);
 }

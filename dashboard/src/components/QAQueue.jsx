@@ -6,8 +6,8 @@ export default function QAQueue({ campusId }) {
   if (loading) return <div className="loading">Loading QA queue...</div>;
   if (error) return <div className="error">Error: {error}</div>;
 
-  const needsQA = (videos || []).filter((v) => v.qa_passed === null && v.status === 'edited');
-  const failed = (videos || []).filter((v) => v.qa_passed === false || v.status === 'waiting');
+  const needsQA = (videos || []).filter((v) => v.qa_passed === null && v.status === 'EDITED');
+  const failed = (videos || []).filter((v) => v.qa_passed === false || v.status === 'WAITING');
 
   return (
     <div className="panel">

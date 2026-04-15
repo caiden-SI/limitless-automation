@@ -258,3 +258,53 @@ Both set to `active = true`, `campus_id` = Austin campus UUID (`0ba4268f-f010-43
    `setCampusId()` was called during render whenever `campusId` was falsy, which made "All Campuses" mode unreachable and violated React's rules. Moved to a `useEffect` with an `initialized` guard so auto-selection only happens on first load. Selecting "All Campuses" (null) now persists correctly.
 
 **Status:** Done — code changes applied. RLS SQL must be run manually in Supabase SQL Editor.
+
+---
+
+### 2026-04-07 | Codex adversarial review round 2 — 4 fixes applied
+
+**Decision:** Fix all 4 issues identified by the second Codex adversarial review (full repo scan from root commit).
+
+**Findings and changes:**
+
+1. **[CRITICAL] RLS policies replaced with server-side RPC functions** (`scripts/setup-dashboard-rls.sql`)
+   The `campus_id IS NOT NULL` RLS policy did not enforce tenant scoping — any anon client could query all campuses by omitting the filter. Replaced all anon SELECT policies (except campuses) with `SECURITY DEFINER` RPC functions that require a `campus_id` parameter: `get_campus_videos()`, `get_campus_agent_logs()`, `get_campus_editors()`, `get_campus_performance_signals()`. Dashboard hooks updated to call these RPCs instead of querying tables directly. Anon role can no longer SELECT from data tables.
+
+2. **[HIGH] Webhook inbox for durable event processing** (`handlers/clickup.js`, `scripts/migrate-webhook-inbox.sql`)
+   The handler was returning 200 before any durable processing, so failed automations were silently lost with no retry path. Now inserts the raw webhook payload into a `webhook_inbox` table before acknowledging. If the inbox insert fails, returns 500 so ClickUp retries. On processing failure, updates `failed_at` and `error_message` on the inbox row for investigation/replay. On success, sets `processed_at`.
+
+3. **[HIGH] FFmpeg LUFS check fails closed** (`agents/qa.js`, `server.js`)
+   When FFmpeg was missing, the LUFS check returned no issues, allowing videos to pass QA without audio validation. Now returns an explicit error issue (`LUFS: FFmpeg is not installed`) that blocks QA passage. Added FFmpeg availability check to server startup health checks — logs a warning on boot if FFmpeg is missing.
+
+4. **[MEDIUM] Dashboard status casing unified to uppercase** (`dashboard/src/lib/hooks.js`, `dashboard/src/components/PipelineView.jsx`, `dashboard/src/components/QAQueue.jsx`, `dashboard/src/components/EditorCapacity.jsx`)
+   The backend `dbStatus()` writes uppercase statuses to Supabase, but dashboard queries filtered for lowercase. Updated all status constants, filters, and comparisons to uppercase (EDITED, WAITING, IN EDITING, etc.). Added `statusLabel()` helper for display-friendly lowercase rendering in the UI.
+
+**Migration required:** Run `scripts/migrate-webhook-inbox.sql` and `scripts/setup-dashboard-rls.sql` in Supabase SQL Editor.
+
+**Status:** Done.
+
+---
+
+### 2026-04-07 | Onboarding agent: server-side session state (Codex adversarial review round 3)
+
+**Decision:** Move all onboarding conversation state from client-supplied hidden HTML comments to a server-side `onboarding_sessions` table. Fix 4 issues identified by focused Codex adversarial review of the onboarding agent.
+
+**Findings and changes:**
+
+1. **[HIGH] Server-side session state replaces client-trusted hidden comments** (`agents/onboarding.js`, `scripts/migrate-onboarding-sessions.sql`)
+   The original design embedded state in `<!-- STATE:{...} -->` HTML comments in assistant messages, passed back by the client on every request. A caller could forge state to skip sections, corrupt answer mapping, or force premature completion. Now all state lives in `onboarding_sessions` table: `current_section`, `current_question_index`, `answers` (jsonb), `influencer_transcripts` (jsonb), `industry_report`, `conversation_history` (jsonb). The client sends only `{ studentId, campusId, message }` — state is never read from or trusted from the client. Session is looked up by `student_id + campus_id` (unique constraint).
+
+2. **[HIGH] Influencer transcripts persisted to session immediately** (`agents/onboarding.js`)
+   Previously, `influencerResults` was a per-request local variable — populated only on the turn where `currentKey === 'influencers'`, then lost on the next request. The Apify-scraped transcripts were never available for final synthesis. Now `fetchInfluencerTranscripts()` results are written to `onboarding_sessions.influencer_transcripts` immediately after scraping. Synthesis reads from the persisted session column.
+
+3. **[HIGH] Raw answers persisted after each turn** (`agents/onboarding.js`)
+   Previously, answers were extracted from conversation history by parsing hidden state comments — fragile and client-dependent. Now each answer is written to `onboarding_sessions.answers` (jsonb key-value map) on every turn. Synthesis reads from this persisted object. The full conversation history is also persisted as an audit trail alongside the synthesized document.
+
+4. **[MEDIUM] Completion guard on POST route** (`server.js`)
+   The POST route now checks `students.onboarding_completed_at` before processing. If already set, returns `{ isComplete: true, contextDocument: existing claude_project_context }` immediately without reprocessing. Prevents overwrite of completed onboarding data.
+
+**Architecture change:** The onboarding agent is no longer stateless. The `POST /onboarding/message` endpoint no longer accepts `conversationHistory` from the client. The React frontend sends only `{ studentId, campusId, message }` and displays messages locally for UX, but all authoritative state is server-side.
+
+**Migration required:** Run `scripts/migrate-onboarding-sessions.sql` in Supabase SQL Editor.
+
+**Status:** Done.

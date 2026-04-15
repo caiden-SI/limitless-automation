@@ -8,9 +8,12 @@ const { log } = require('./lib/logger');
 const clickupHandler = require('./handlers/clickup');
 const dropboxHandler = require('./handlers/dropbox');
 const frameioHandler = require('./handlers/frameio');
+const onboarding = require('./agents/onboarding');
 const scheduler = require('./lib/scheduler');
 const research = require('./agents/research');
 const performance = require('./agents/performance');
+
+const { execFile } = require('child_process');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -47,6 +50,96 @@ app.get('/webhooks/dropbox', (req, res) => {
   res.status(400).send('Missing challenge parameter');
 });
 
+// Onboarding routes
+app.post('/onboarding/message', async (req, res) => {
+  try {
+    const { studentId, campusId, message } = req.body;
+
+    if (!studentId || !campusId) {
+      return res.status(400).json({ error: 'studentId and campusId are required' });
+    }
+
+    // Look up student — check completion guard
+    const { supabase } = require('./lib/supabase');
+    const { data: student, error: sErr } = await supabase
+      .from('students')
+      .select('id, name, onboarding_completed_at, claude_project_context')
+      .eq('id', studentId)
+      .eq('campus_id', campusId)
+      .maybeSingle();
+
+    if (sErr) throw new Error(`Supabase query failed (students): ${sErr.message}`);
+    if (!student) {
+      return res.status(404).json({ error: 'Student not found for this campus' });
+    }
+
+    // Completion guard: if already onboarded, return existing context
+    if (student.onboarding_completed_at) {
+      return res.json({
+        reply: 'Your context is ready!',
+        section: 6,
+        isComplete: true,
+        contextDocument: student.claude_project_context,
+      });
+    }
+
+    // State lives server-side — client only sends the message
+    const result = await onboarding.handleMessage({
+      studentId,
+      campusId,
+      studentName: student.name,
+      message: message || '',
+    });
+
+    res.json({
+      reply: result.reply,
+      section: result.section,
+      isComplete: result.isComplete,
+      contextDocument: result.contextDocument,
+    });
+  } catch (err) {
+    await log({
+      agent: 'onboarding',
+      action: 'endpoint_error',
+      status: 'error',
+      errorMessage: err.message,
+      payload: { stack: err.stack },
+    });
+    res.status(500).json({ error: 'Onboarding message failed' });
+  }
+});
+
+app.get('/onboarding/student', async (req, res) => {
+  try {
+    const { studentId, campusId } = req.query;
+
+    if (!studentId || !campusId) {
+      return res.status(400).json({ error: 'studentId and campusId are required' });
+    }
+
+    const { supabase } = require('./lib/supabase');
+    const { data: student, error: sErr } = await supabase
+      .from('students')
+      .select('id, name, onboarding_completed_at')
+      .eq('id', studentId)
+      .eq('campus_id', campusId)
+      .maybeSingle();
+
+    if (sErr) throw new Error(`Supabase query failed (students): ${sErr.message}`);
+    if (!student) {
+      return res.status(404).json({ error: 'Student not found' });
+    }
+
+    res.json({
+      id: student.id,
+      name: student.name,
+      onboardingCompleted: !!student.onboarding_completed_at,
+    });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch student' });
+  }
+});
+
 // Global error handler — catch unhandled route errors
 app.use((err, _req, res, _next) => {
   log({
@@ -62,6 +155,17 @@ app.use((err, _req, res, _next) => {
 app.listen(PORT, () => {
   console.log(`[server] Limitless webhook server listening on port ${PORT}`);
   log({ agent: 'server', action: `started on port ${PORT}` });
+
+  // Startup health checks
+  execFile('ffmpeg', ['-version'], (err) => {
+    if (err) {
+      console.error('[server] WARNING: FFmpeg is not installed — QA LUFS checks will fail closed');
+      log({ agent: 'server', action: 'health_check_ffmpeg', status: 'warning', payload: { available: false } });
+    } else {
+      console.log('[server] FFmpeg: available');
+      log({ agent: 'server', action: 'health_check_ffmpeg', payload: { available: true } });
+    }
+  });
 
   // Register scheduled agent jobs
   // Research Agent — daily at 6 AM

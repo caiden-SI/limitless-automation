@@ -7,10 +7,10 @@ export default function EditorCapacity({ campusId }) {
   if (ld1 || ld2) return <div className="loading">Loading editors...</div>;
   if (e1 || e2) return <div className="error">Error: {e1 || e2}</div>;
 
-  // Count active tasks per editor
+  // Count active (IN EDITING) tasks per editor
   const counts = {};
   for (const task of activeTasks || []) {
-    if (task.assignee_id) {
+    if (task.assignee_id && task.status === 'IN EDITING') {
       counts[task.assignee_id] = (counts[task.assignee_id] || 0) + 1;
     }
   }

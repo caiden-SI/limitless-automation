@@ -102,4 +102,49 @@ async function scrapeInstagram(queries, maxResults = 20) {
     }));
 }
 
-module.exports = { runActor, scrapeTikTok, scrapeInstagram };
+/**
+ * Scrape recent videos from a specific influencer profile.
+ * Used by the onboarding agent (Section 3) to auto-fetch transcripts.
+ * @param {string} profileUrl - Profile URL or handle (e.g. "https://tiktok.com/@garyvee")
+ * @param {'tiktok'|'instagram'} platform - Which platform to scrape
+ * @param {number} [maxResults=5] - Max videos to return
+ * @returns {Promise<Array<{ url: string, description: string, transcript: string|null, platform: string }>>}
+ */
+async function scrapeProfileVideos(profileUrl, platform, maxResults = 5) {
+  if (platform === 'tiktok' || profileUrl.includes('tiktok.com')) {
+    const items = await runActor('clockworks~free-tiktok-scraper', {
+      profiles: [profileUrl],
+      resultsPerPage: maxResults,
+      shouldDownloadVideos: false,
+      shouldDownloadCovers: false,
+    }, 60);
+
+    return items.map((item) => ({
+      url: item.webVideoUrl || item.url || '',
+      description: item.text || item.desc || '',
+      transcript: item.subtitleText || item.transcript || null,
+      platform: 'tiktok',
+    }));
+  }
+
+  if (platform === 'instagram' || profileUrl.includes('instagram.com')) {
+    const items = await runActor('apify~instagram-scraper', {
+      directUrls: [profileUrl],
+      resultsType: 'posts',
+      resultsLimit: maxResults,
+    }, 60);
+
+    return items
+      .filter((item) => item.type === 'Video' || item.videoUrl)
+      .map((item) => ({
+        url: item.url || (item.shortCode ? `https://www.instagram.com/p/${item.shortCode}/` : ''),
+        description: item.caption || '',
+        transcript: item.accessibilityCaption || null,
+        platform: 'instagram',
+      }));
+  }
+
+  throw new Error(`Unsupported platform for profile scrape: ${platform}`);
+}
+
+module.exports = { runActor, scrapeTikTok, scrapeInstagram, scrapeProfileVideos };
