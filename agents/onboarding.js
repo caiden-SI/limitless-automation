@@ -397,22 +397,56 @@ async function writeToSupabase({ studentId, campusId, contextDocument, answers }
 }
 
 /**
+ * Question keys whose answers are expected to contain the student's OWN social handles.
+ *
+ * The current SECTIONS definition has no question asking the student for their own
+ * accounts. Section 3 `influencers` asks about OTHER people the student follows,
+ * and Section 5 `creator_references` asks about creators they watch for style.
+ * Scanning either of those would mis-assign someone else's handle to the student.
+ *
+ * This allowlist is intentionally empty. When a dedicated question is added to
+ * SECTIONS (e.g., "What are your TikTok, Instagram, and YouTube handles?"), add
+ * its key here. Keys that must NEVER be added are documented in INFLUENCER_HANDLE_KEYS
+ * below so a future contributor does not accidentally include them.
+ */
+const STUDENT_HANDLE_KEYS = [
+  // Add student-owned-handle question keys here once a dedicated question exists.
+];
+
+/**
+ * Keys that hold handles for OTHER people (influencers, creator references).
+ * Listed here as a documentation guardrail: these must never appear in
+ * STUDENT_HANDLE_KEYS. Not used by the extractor at runtime.
+ */
+// eslint-disable-next-line no-unused-vars
+const INFLUENCER_HANDLE_KEYS = ['influencers', 'creator_references'];
+
+/**
  * Extract the student's own social handles from their answers.
- * Scans each answer separately so newlines in long answers do not break matching.
- * Recognizes three patterns per platform:
+ * Only scans answers whose keys are in STUDENT_HANDLE_KEYS. Returns {} until
+ * a dedicated question is added to SECTIONS and its key is added to the allowlist.
+ *
+ * When enabled, recognizes three patterns per platform, scanning each answer
+ * separately so newlines in long answers do not break matching:
  *   1. URL form:    https://tiktok.com/@xxx
  *   2. Adjacent:    "my tiktok is @xxx" / "@xxx on tiktok"
  *   3. Bare handle when the platform word appears anywhere in the same answer
  */
 function extractStudentHandles(answers) {
   const handles = {};
+
+  if (STUDENT_HANDLE_KEYS.length === 0) {
+    return handles;
+  }
+
   const platforms = [
     { key: 'handle_tiktok',    word: 'tiktok',    urlHosts: ['tiktok.com'] },
     { key: 'handle_instagram', word: 'instagram', urlHosts: ['instagram.com'] },
     { key: 'handle_youtube',   word: 'youtube',   urlHosts: ['youtube.com', 'youtu.be'] },
   ];
 
-  for (const ans of Object.values(answers)) {
+  for (const ansKey of STUDENT_HANDLE_KEYS) {
+    const ans = answers[ansKey];
     if (typeof ans !== 'string' || !ans) continue;
 
     for (const p of platforms) {
