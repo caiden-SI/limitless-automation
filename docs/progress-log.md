@@ -665,3 +665,47 @@ Two issues found during manual testing of the onboarding flow:
 3. Frame.io share link creation (done handler)
 4. Add Fireflies and Apify credentials
 5. Install FFmpeg on Mac Mini for production LUFS checks
+
+---
+
+## Session 6 — April 15, 2026
+
+Onboarding agent live test surfaced three related persistence bugs. Fixed in `agents/onboarding.js`, added a reset script, and reset Alex Mathews' state for re-testing.
+
+### Bugs Reported from Live Test
+
+| # | Symptom | Root cause |
+|---|---|---|
+| 1 | `onboarding_sessions.answers` stayed `{}` for the whole run while `conversation_history` saved correctly | Per-turn answer was only saved as part of the main multi-field `updateSession` at the end of the turn. Anything between answer storage and that final save (Apify scrape, next-question Claude call) could throw or hang and the answer would be lost on retry. No durability boundary at the moment of capture. |
+| 2 | `students.claude_project_context` stayed `NULL` after the last question | Completion handler ran three sequential Claude calls (industry report, context synthesis, no failure logging) plus a Supabase write before any user-visible signal. A failure in `synthesizeContextDocument` or `writeToSupabase` aborted the function silently from the operator's view. |
+| 3 | `students.onboarding_completed_at` stayed `NULL` | Same root cause as bug 2: `writeToSupabase` is the single line that sets both `claude_project_context` and `onboarding_completed_at`. If it didn't run, neither field was populated. |
+| 4 | `handle_tiktok` / `handle_instagram` / `handle_youtube` stayed `NULL` | Confirmed downstream of bug 1 (no answers to extract from), plus the regex used `Object.values(answers).join(' ')` which collapses all answers into one greedy string. Newlines inside answers broke `.*` matching since JS `.` does not match `\n`, and cross-answer matches risked false positives. |
+
+### Fixes Applied
+
+**`agents/onboarding.js`**
+
+1. **Per-turn answer persistence.** Added an explicit `updateSession(session.id, { answers })` immediately after the answer-storage block, wrapped in try/catch with an `answer_persist_error` log. This is now the durability boundary for a captured answer. The main multi-field `updateSession` at the end of the turn still runs and is still authoritative for the full session state.
+
+2. **Completion handler instrumentation.** Wrapped each completion step in its own try/catch with explicit log entries: `completion_started`, `industry_report_generated`, `context_document_synthesized`, `students_table_written`. `synthesizeContextDocument` and `writeToSupabase` now rethrow on failure so the operator sees the real error in `agent_logs` instead of a silent abort. The final session update is non-fatal (`final_session_update_warning`) since the students table write is the real completion signal.
+
+3. **Handle extraction rewritten.** New `extractStudentHandles(answers)` function scans each answer separately so multi-line answers do not break matching. Three patterns per platform: URL form (`tiktok.com/@xxx`), adjacent-word form (`"my tiktok is @xxx"` within 80 chars on a single line), and bare-handle fallback when the platform word appears anywhere in the same answer. First match per platform wins.
+
+**`scripts/reset-onboarding.js`** (new)
+
+Operator script to clear a student's onboarding state for re-testing. Defaults to matching name `%alex%`. Deletes all `onboarding_sessions` rows for the student, nulls `claude_project_context`, `onboarding_completed_at`, and the three handle columns, then prints the `/onboard` URL. Used to reset Alex Mathews this session.
+
+### Reset Confirmed
+
+```
+Resetting: Alex Mathews (0bf6a38a-801e-4eff-b0c8-c209a9029b7e)
+  Sessions deleted: 1
+  Student onboarding fields cleared
+  /onboard URL: http://localhost:5173/onboard?student=0bf6a38a-801e-4eff-b0c8-c209a9029b7e&campus=0ba4268f-f010-43c5-906c-41509bc9612f
+```
+
+### What's Next
+
+1. Re-run the full onboarding flow end to end against Alex Mathews. Watch `agent_logs` for the new `completion_started`, `industry_report_generated`, `context_document_synthesized`, `students_table_written` entries to confirm each step fires.
+2. Verify `onboarding_sessions.answers` accumulates per turn (should be visible in Supabase Table Editor after each user reply).
+3. Verify the new handle extraction picks up handles from realistic test answers.

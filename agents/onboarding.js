@@ -375,15 +375,7 @@ On-camera comfort assessment based on their answers, optimal content approach (2
 // ---------------------------------------------------------------------------
 
 async function writeToSupabase({ studentId, campusId, contextDocument, answers }) {
-  const handles = {};
-  const allText = Object.values(answers).join(' ');
-  const tiktokMatch = allText.match(/@([\w.]+).*tiktok/i) || allText.match(/tiktok.*@([\w.]+)/i);
-  const igMatch = allText.match(/@([\w.]+).*instagram/i) || allText.match(/instagram.*@([\w.]+)/i);
-  const ytMatch = allText.match(/@([\w.]+).*youtube/i) || allText.match(/youtube.*@([\w.]+)/i);
-
-  if (tiktokMatch) handles.handle_tiktok = tiktokMatch[1];
-  if (igMatch) handles.handle_instagram = igMatch[1];
-  if (ytMatch) handles.handle_youtube = ytMatch[1];
+  const handles = extractStudentHandles(answers);
 
   const { error } = await supabase
     .from('students')
@@ -402,6 +394,60 @@ async function writeToSupabase({ studentId, campusId, contextDocument, answers }
     action: 'onboarding_complete',
     payload: { studentId, handles: Object.keys(handles) },
   });
+}
+
+/**
+ * Extract the student's own social handles from their answers.
+ * Scans each answer separately so newlines in long answers do not break matching.
+ * Recognizes three patterns per platform:
+ *   1. URL form:    https://tiktok.com/@xxx
+ *   2. Adjacent:    "my tiktok is @xxx" / "@xxx on tiktok"
+ *   3. Bare handle when the platform word appears anywhere in the same answer
+ */
+function extractStudentHandles(answers) {
+  const handles = {};
+  const platforms = [
+    { key: 'handle_tiktok',    word: 'tiktok',    urlHosts: ['tiktok.com'] },
+    { key: 'handle_instagram', word: 'instagram', urlHosts: ['instagram.com'] },
+    { key: 'handle_youtube',   word: 'youtube',   urlHosts: ['youtube.com', 'youtu.be'] },
+  ];
+
+  for (const ans of Object.values(answers)) {
+    if (typeof ans !== 'string' || !ans) continue;
+
+    for (const p of platforms) {
+      if (handles[p.key]) continue; // first match wins per platform
+
+      // 1. URL form
+      for (const host of p.urlHosts) {
+        const urlRegex = new RegExp(host.replace(/\./g, '\\.') + '/@?([\\w.]+)', 'i');
+        const m = ans.match(urlRegex);
+        if (m && m[1] && !p.urlHosts.includes(m[1])) {
+          handles[p.key] = m[1];
+          break;
+        }
+      }
+      if (handles[p.key]) continue;
+
+      // 2. Adjacent: "tiktok ... @xxx" or "@xxx ... tiktok" within ~80 chars on a single line
+      const wordRegex = new RegExp(`\\b${p.word}\\b[^\\n]{0,80}@([\\w.]+)|@([\\w.]+)[^\\n]{0,80}\\b${p.word}\\b`, 'i');
+      const adj = ans.match(wordRegex);
+      if (adj) {
+        handles[p.key] = adj[1] || adj[2];
+        continue;
+      }
+
+      // 3. Bare @handle in an answer that mentions the platform anywhere
+      if (new RegExp(`\\b${p.word}\\b`, 'i').test(ans)) {
+        const bare = ans.match(/@([\w.]+)/);
+        if (bare) {
+          handles[p.key] = bare[1];
+        }
+      }
+    }
+  }
+
+  return handles;
 }
 
 // ---------------------------------------------------------------------------
@@ -494,6 +540,23 @@ async function handleMessage({ studentId, campusId, studentName, message }) {
     } else {
       answers[currentQ.key] = message;
     }
+
+    // Persist the answer immediately. This is the durability boundary: even if
+    // the influencer scrape, the next-question Claude call, or the completion
+    // handler throws later in this turn, this answer is already in the database.
+    try {
+      await updateSession(session.id, { answers });
+    } catch (err) {
+      await log({
+        campusId,
+        agent: AGENT_NAME,
+        action: 'answer_persist_error',
+        status: 'error',
+        errorMessage: err.message,
+        payload: { questionKey: currentQ.key, questionIndex },
+      });
+      throw err;
+    }
   }
 
   // ------ Handle influencer scraping (Section 3) ------
@@ -573,6 +636,7 @@ async function handleMessage({ studentId, campusId, studentName, message }) {
   }
 
   // ------ All questions complete — generate outputs ------
+  await log({ campusId, agent: AGENT_NAME, action: 'completion_started', payload: { answerCount: Object.keys(answers).length } });
 
   // Generate industry report (Section 6 — automated)
   let industryReport = session.industry_report || '';
@@ -583,6 +647,7 @@ async function handleMessage({ studentId, campusId, studentName, message }) {
         influencerTranscripts.filter((r) => r.success).map((r) => r.handle),
       );
       await updateSession(session.id, { industry_report: industryReport });
+      await log({ campusId, agent: AGENT_NAME, action: 'industry_report_generated', payload: { length: industryReport.length } });
     } catch (err) {
       await log({
         campusId,
@@ -596,22 +661,61 @@ async function handleMessage({ studentId, campusId, studentName, message }) {
   }
 
   // Synthesize context document from persisted data
-  const contextDocument = await synthesizeContextDocument(
-    studentName,
-    answers,
-    influencerTranscripts,
-    industryReport,
-  );
+  let contextDocument;
+  try {
+    contextDocument = await synthesizeContextDocument(
+      studentName,
+      answers,
+      influencerTranscripts,
+      industryReport,
+    );
+    await log({ campusId, agent: AGENT_NAME, action: 'context_document_synthesized', payload: { length: contextDocument.length } });
+  } catch (err) {
+    await log({
+      campusId,
+      agent: AGENT_NAME,
+      action: 'context_document_synth_error',
+      status: 'error',
+      errorMessage: err.message,
+      payload: { stack: err.stack },
+    });
+    throw err;
+  }
 
-  // Write to students table
-  await writeToSupabase({ studentId, campusId, contextDocument, answers });
+  // Write to students table — claude_project_context, onboarding_completed_at, handles
+  try {
+    await writeToSupabase({ studentId, campusId, contextDocument, answers });
+    await log({ campusId, agent: AGENT_NAME, action: 'students_table_written', payload: { studentId } });
+  } catch (err) {
+    await log({
+      campusId,
+      agent: AGENT_NAME,
+      action: 'students_write_error',
+      status: 'error',
+      errorMessage: err.message,
+      payload: { studentId, stack: err.stack },
+    });
+    throw err;
+  }
 
-  // Final session update
-  await updateSession(session.id, {
-    answers,
-    conversation_history: history,
-    industry_report: industryReport,
-  });
+  // Final session update — answers and history are already persisted per-turn,
+  // but write history one more time to capture the final assistant turn if any.
+  try {
+    await updateSession(session.id, {
+      answers,
+      conversation_history: history,
+      industry_report: industryReport,
+    });
+  } catch (err) {
+    // Non-fatal: students table is already written, so onboarding is effectively complete.
+    await log({
+      campusId,
+      agent: AGENT_NAME,
+      action: 'final_session_update_warning',
+      status: 'warning',
+      errorMessage: err.message,
+    });
+  }
 
   return {
     reply: 'Your context is ready!',
