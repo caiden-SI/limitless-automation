@@ -12,6 +12,7 @@ const onboarding = require('./agents/onboarding');
 const scheduler = require('./lib/scheduler');
 const research = require('./agents/research');
 const performance = require('./agents/performance');
+const scripting = require('./agents/scripting');
 
 const { execFile } = require('child_process');
 
@@ -172,6 +173,8 @@ app.listen(PORT, () => {
   scheduler.register('research-agent', '0 6 * * *', research.runAll);
   // Performance Analysis Agent — every Monday at 7 AM
   scheduler.register('performance-agent', '0 7 * * 1', performance.runAll);
+  // Scripting Agent — every 15 minutes, 48-hour lookahead on Google Calendar
+  scheduler.register('scripting-agent', '*/15 * * * *', scripting.runAll);
 });
 
 // Catch unhandled promise rejections — log before PM2 restarts

@@ -709,3 +709,112 @@ Resetting: Alex Mathews (0bf6a38a-801e-4eff-b0c8-c209a9029b7e)
 1. Re-run the full onboarding flow end to end against Alex Mathews. Watch `agent_logs` for the new `completion_started`, `industry_report_generated`, `context_document_synthesized`, `students_table_written` entries to confirm each step fires.
 2. Verify `onboarding_sessions.answers` accumulates per turn (should be visible in Supabase Table Editor after each user reply).
 3. Verify the new handle extraction picks up handles from realistic test answers.
+
+---
+
+## Session 7 — April 20, 2026
+
+Scripting Agent built from the spec in `workflows/scripting-agent.md`. Stub replaced with full implementation, one round of Codex adversarial review surfaced three no-ship issues (all fixed), integration test passes end-to-end against real Supabase + Claude + ClickUp.
+
+### Spec gaps flagged before build
+
+Six items in the workflow SOP did not line up with the current code or schema. Resolved during this session:
+
+| # | Gap | Resolution |
+|---|---|---|
+| 1 | `videos.student_id` column did not exist; spec required insert with it | Added `videos.student_id uuid REFERENCES students(id)` in the migration; write both `student_id` and `student_name` (denormalized for dashboard) on insert |
+| 2 | No per-campus Google Calendar configuration | Added `campuses.google_calendar_id text` in the migration; `runForCampus` warns + skips when null |
+| 3 | ClickUp custom field IDs for Internal Video Name / Project Description not in env | Added `CLICKUP_INTERNAL_VIDEO_NAME_FIELD_ID` and `CLICKUP_PROJECT_DESCRIPTION_FIELD_ID` to `.env.example` and `.env`; values from `docs/progress-log.md` Session 3 discovery |
+| 4 | `hook_type` taxonomy not enumerated in spec | Promoted `validHooks` to an exported `HOOK_TYPES` constant in `agents/research.js`; `agents/scripting.js` imports the same constant so the two agents can never drift |
+| 5 | Brand voice examples file lives in a different repo | Read from `BRAND_VOICE_EXAMPLES_PATH` env var with no default; agent omits the `BRAND_VOICE_EXAMPLES` prompt block and logs a warning when absent. Does not block. |
+| 6 | Test had no way to inject events without polluting the real Google Calendar | Exported `processEvent(event, campusId)` and `runOnce()` from `agents/scripting.js`; the test passes a fake event object directly and bypasses `gcal.listUpcomingFilmingEvents` |
+
+### Built — Scripting Agent
+
+**`agents/scripting.js`** (full rewrite from stub)
+
+- `processEvent(event, campusId)` — orchestrator. Dedup read → campus load → student match → atomic claim insert → context load → Claude call (with one validation retry) → writes with rollback.
+- `loadContext({ campusId, student })` — parallel fetch of latest `performance_signals` row, top 10 `research_library` entries by `view_count`, and optional brand voice examples file. Agent hedges when any section is missing.
+- `buildPrompt({ student, context, validationError })` — system prompt enumerates `HOOK_TYPES` and the 5-field concept schema; user prompt includes `claude_project_context` verbatim. On retry, appends the previous validation error so Claude can correct.
+- `generateConcepts(...)` — two attempts max. First attempt validation error is fed back to Claude; second failure aborts without writes.
+- `validateConcepts(raw)` — enforces all 7 spec rules: array of exactly 3, all 5 fields present, title 1-4 words, script 70-150 words, `hook_type ∈ HOOK_TYPES`, `creative_direction` non-empty array of non-empty strings. Throws a precise error string that the caller appends to the retry prompt.
+- `writeConcepts({ campus, student, event, concepts, claimId })` — atomic 3-row `videos` insert, sequential ClickUp `createTask` + 2 × `setCustomField` + `videos.clickup_task_id` update per concept. Transitions the claim row from `pending` to `completed` on success.
+- `rollback(...)` — deletes inserted videos, archives created ClickUp tasks (ClickUp REST v2 has no hard delete, archive is the closest), then decides the claim's fate: clean rollback deletes the claim (allows retry); partial cleanup marks `failed_cleanup` (halts retries).
+- `runForCampus(campus)` — gates on `campus.google_calendar_id`, calls `gcal.listUpcomingFilmingEvents`, swallows per-event errors.
+- `runAll()` — mirrors `research.runAll`; loops active campuses. Registered as `scripting-agent` cron at `*/15 * * * *` in `server.js`.
+
+**`lib/gcal.js`** (new)
+
+Google Calendar service-account JWT client. `listUpcomingFilmingEvents(calendarId, windowHours)` returns normalized `{ id, title, description, startTime }` events. `parseStudentFromEvent(event, roster)` returns `{ student, reason, candidates }` — word-boundary matching with regex-special escape, explicit ambiguity rejection.
+
+**`agents/research.js`** — exported `HOOK_TYPES` and `FORMAT_TYPES` constants; `classifyTranscript` now reads from them.
+
+**`scripts/migrations/2026-04-20-scripting-agent.sql`** (new, staged — not auto-applied)
+
+Three statements: `processed_calendar_events` table (with `status`, `error_payload`, `video_ids`, `completed_at`), `videos.student_id` FK, `campuses.google_calendar_id` text column. Ran manually in Supabase SQL Editor before the integration test.
+
+### Codex Adversarial Review — 3 Issues Found and Fixed
+
+Ran `/codex:adversarial-review` against the diff (~900 lines). Verdict: **needs-attention**. All 3 findings fixed before integration test.
+
+**1. [HIGH] Dedup was not atomic (`agents/scripting.js`)**
+
+The original flow did a read-based duplicate check first and did not insert into `processed_calendar_events` until after all videos and ClickUp tasks existed. Two overlapping cron executions could both pass the read, both create 3 videos and 3 ClickUp tasks, and only race on the final dedup insert. The unique constraint only protected the bookkeeping row; it did not prevent the duplicate external side effects.
+
+**Fix:** Added `status text NOT NULL DEFAULT 'pending'` to `processed_calendar_events` and inserted the claim row before any side effects. The `(campus_id, event_id)` unique constraint now serializes overlapping runs atomically. On `23505` unique-violation, the loser silently skips with `claim_race_lost`. Claim transitions to `completed` after writes succeed.
+
+**2. [HIGH] Failed rollback left orphans that guaranteed retry duplication (`agents/scripting.js`)**
+
+The original `rollback` deleted videos and archived ClickUp tasks best-effort. If either compensating action failed, it just logged and returned. Because no `processed_calendar_events` row was written on failure, the next cron tick retried the same event, even though partial state from the previous attempt still existed. One failed cleanup meant duplicates and orphans accumulated every 15 minutes until someone intervened.
+
+**Fix:** `rollback` now tracks whether every compensating action succeeded. Clean rollback deletes the claim row (allows retry). Partial rollback transitions the claim to `status='failed_cleanup'` with an `error_payload` describing what failed — automatic retries stop until an operator releases the claim.
+
+**3. [MEDIUM] Student matching silently resolved ambiguous substring matches (`lib/gcal.js`)**
+
+The original `parseStudentFromEvent` did case-insensitive substring search and returned the longest match. No word-boundary check, no ambiguity handling. A roster with overlapping names (common case: "Alex" + "Alex Mathews") would cause `processEvent` to write videos and ClickUp tasks against the wrong student.
+
+**Fix:** `parseStudentFromEvent` now uses a `\b`-bounded case-insensitive regex per candidate (with regex-special chars escaped), rejects on 2+ matches, and returns `{ student, reason, candidates }`. Ambiguous events are logged with the candidate list and skipped without claiming so the event can reprocess once the operator clarifies it.
+
+### Integration Test Results
+
+`scripts/test-scripting-agent.js` (new). Runs against real Supabase + real Claude + real ClickUp. Uses Alex Mathews student (`0bf6a38a-801e-4eff-b0c8-c209a9029b7e`, Austin campus) and injects fake calendar events directly via `processEvent`.
+
+**Test 1 — happy path:** `processEvent` with title "Filming with Alex Mathews". Asserts 3 `videos` rows created with status `IDEA` and `student_id` matching Alex; 3 ClickUp tasks created with both custom fields populated; `processed_calendar_events` row is `status='completed'` with all 3 video IDs. Prints concepts for eyeball review. ✓
+
+**Test 2 — rollback:** monkey-patched `clickup.createTask` to throw on the second call. Asserts the simulated failure surfaces, all 3 inserted videos are deleted, the one pre-failure ClickUp task is archived, and the `processed_calendar_events` row is deleted (clean rollback). `agent_logs` contains a `scripting` error entry. ✓
+
+**Test 3 — dedup:** called `processEvent` twice with the same event ID. Second call returned `{ skipped: 'already_claimed:completed' }` with zero additional writes. Exactly one `processed_calendar_events` row. ✓
+
+**Teardown:** deleted 6 test videos, 3 processed_calendar_events rows, archived 7 ClickUp tasks. ✓
+
+### Generated Concepts — Alex Mathews (Eyeball Review)
+
+Performance signals empty (no populated `top_hooks`), so the hook-uniqueness assertion was skipped. Claude naturally diversified:
+
+| # | Title | Hook type | Hook angle |
+|---|---|---|---|
+| 1 | AI at 8 | shock | Reveal the surprising age when kids should start learning AI |
+| 2 | Building for Brother | story | Personal story of creating a solution for family member's struggle |
+| 3 | The AI Gap | stat | Shocking statistic about AI education availability in schools |
+
+All three name-drop Alex's "Early-Ai" brand, position him as an AI-educator for kids, and read as 30-60 seconds spoken. Voice-aligned with the `claude_project_context` populated by Session 5/6 onboarding. Quality acceptable for first live concept run.
+
+### Agent Status Matrix
+
+| Agent | Status | Trigger | Notes |
+|---|---|---|---|
+| Pipeline | **Live — e2e tested** | ClickUp webhook | 3 triggers active |
+| QA | **Live** — FFmpeg fails closed | "edited" status | LUFS blocks if FFmpeg missing |
+| Research | Built — needs APIFY_API_TOKEN | Daily 6 AM cron | Now exports `HOOK_TYPES` shared with Scripting |
+| Performance | Built — full analysis pipeline | Monday 7 AM cron | No changes |
+| Onboarding | **Built — live tested** | `/onboard` URL | No changes |
+| **Scripting** | **Built — integration test passing** | `*/15 * * * *` cron | Atomic claim, word-boundary matching, quarantine on partial rollback |
+| Dashboard | **Live** — RPC-hardened | localhost:5173 | No changes |
+
+### What's Next
+
+1. Populate `campuses.google_calendar_id` for Austin (Scott-owned calendar ID) so cron runs can actually list events.
+2. Obtain Scott-approved brand voice examples and set `BRAND_VOICE_EXAMPLES_PATH` so concepts infer tone from real reference scripts, not `claude_project_context` alone.
+3. Operator tool: small script to list `processed_calendar_events` rows in `failed_cleanup` and release them after manual review.
+4. Frame.io share link creation (`done` handler) — last Phase 1 agent work.
+5. Populate `top_hooks` via Performance Agent once ≥50 videos exist; then the hook_type uniqueness path in concept generation will exercise.

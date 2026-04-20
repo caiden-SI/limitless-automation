@@ -16,6 +16,11 @@ const { scrapeTikTok, scrapeInstagram } = require('../tools/scraper');
 
 const AGENT_NAME = 'research';
 
+// Classification taxonomy. Shared with the Scripting Agent so concept
+// hook_type values and research_library hook_type values can never drift.
+const HOOK_TYPES = ['question', 'statement', 'story', 'stat', 'challenge', 'reveal', 'list', 'shock'];
+const FORMAT_TYPES = ['talking-head', 'b-roll-heavy', 'montage', 'tutorial', 'day-in-life', 'interview', 'skit', 'slideshow'];
+
 // Default search queries — aligned with Alpha School / Limitless content
 const DEFAULT_QUERIES = [
   'student entrepreneur',
@@ -189,13 +194,9 @@ async function classifyTranscript(transcript, platform) {
     maxTokens: 256,
   });
 
-  // Validate shape
-  const validHooks = ['question', 'statement', 'story', 'stat', 'challenge', 'reveal', 'list', 'shock'];
-  const validFormats = ['talking-head', 'b-roll-heavy', 'montage', 'tutorial', 'day-in-life', 'interview', 'skit', 'slideshow'];
-
   return {
-    hook_type: validHooks.includes(result.hook_type) ? result.hook_type : 'statement',
-    format: validFormats.includes(result.format) ? result.format : 'talking-head',
+    hook_type: HOOK_TYPES.includes(result.hook_type) ? result.hook_type : 'statement',
+    format: FORMAT_TYPES.includes(result.format) ? result.format : 'talking-head',
     topic_tags: Array.isArray(result.topic_tags) ? result.topic_tags.slice(0, 5) : [],
   };
 }
@@ -239,4 +240,4 @@ async function runAll() {
   }
 }
 
-module.exports = { run, runAll, classifyTranscript, generateTranscript };
+module.exports = { run, runAll, classifyTranscript, generateTranscript, HOOK_TYPES, FORMAT_TYPES };
