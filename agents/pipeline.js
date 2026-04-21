@@ -12,6 +12,7 @@ const { supabase } = require('../lib/supabase');
 const { log } = require('../lib/logger');
 const dropbox = require('../lib/dropbox');
 const clickup = require('../lib/clickup');
+const frameio = require('../lib/frameio');
 const qa = require('./qa');
 
 const AGENT_NAME = 'pipeline';
@@ -43,12 +44,7 @@ async function handleStatusChange(taskId, newStatus, campusId) {
         break;
 
       case 'done':
-        // TODO: Enable once createShareLink() is fully implemented:
-        //   1. Query videos table for frameio_link by clickup_task_id
-        //   2. Call Frame.io API POST /assets/{asset_id}/share_links
-        //   3. Update videos.frameio_share_link in Supabase
-        //   4. Update ClickUp custom link field via API
-        await log({ campusId, agent: AGENT_NAME, action: 'done_received_noop', payload: { taskId, reason: 'createShareLink not yet implemented' } });
+        await createShareLink(taskId, campusId);
         break;
 
       default:
@@ -322,15 +318,111 @@ async function triggerQA(taskId, campusId) {
 }
 
 /**
- * Create Frame.io share link and update ClickUp custom field.
+ * Frame.io comment.created webhook arrived — a reviewer left notes.
+ * Move the task to `waiting` so the editor knows to revise.
+ *
+ * Idempotent: firing twice lands the task in `waiting` twice, which is a
+ * no-op. Does not check current status — a late comment on a `done` video
+ * still sends the task back to `waiting` and operator can decide.
+ */
+async function handleReviewComment(taskId, campusId) {
+  const { video, campus } = await resolveTask(taskId, campusId);
+
+  await clickup.updateTask(taskId, { status: 'waiting' });
+
+  const { error: uErr } = await supabase
+    .from('videos')
+    .update({ status: dbStatus('waiting'), updated_at: new Date().toISOString() })
+    .eq('id', video.id);
+  if (uErr) throw new Error(`Supabase update failed (videos.status): ${uErr.message}`);
+
+  await log({
+    campusId: campus.id,
+    agent: AGENT_NAME,
+    action: 'review_comment_routed',
+    payload: { taskId, videoId: video.id, newStatus: 'waiting' },
+  });
+}
+
+/**
+ * Create a client-facing Frame.io share link and push it to the ClickUp
+ * "E - Frame Link" custom field.
+ *
+ * Idempotent: if videos.frameio_share_link is already set, skip the
+ * Frame.io API call and just re-push the existing URL to ClickUp.
+ * If videos.frameio_asset_id is null, log a warning and return — the
+ * upload step hasn't populated it yet, so there's nothing to share.
+ *
+ * Spec: workflows/frame-io-share-link.md
  */
 async function createShareLink(taskId, campusId) {
-  // TODO: Implement
-  // 1. Query videos table for frameio_link by clickup_task_id
-  // 2. Call Frame.io API POST /assets/{asset_id}/share_links
-  // 3. Update videos.frameio_share_link in Supabase
-  // 4. Update ClickUp custom link field via API
-  await log({ campusId, agent: AGENT_NAME, action: 'create_share_link', payload: { taskId } });
+  const { video, campus } = await resolveTask(taskId, campusId);
+
+  await log({
+    campusId: campus.id,
+    agent: AGENT_NAME,
+    action: 'create_share_link_started',
+    payload: { taskId, videoId: video.id, hasAssetId: !!video.frameio_asset_id, hasShareLink: !!video.frameio_share_link },
+  });
+
+  if (!video.frameio_asset_id) {
+    await log({
+      campusId: campus.id,
+      agent: AGENT_NAME,
+      action: 'create_share_link_skipped',
+      status: 'warning',
+      payload: { taskId, videoId: video.id, reason: 'no frameio_asset_id on video row' },
+    });
+    return;
+  }
+
+  const fieldId = process.env.CLICKUP_FRAMEIO_FIELD_ID;
+  if (!fieldId) {
+    throw new Error('CLICKUP_FRAMEIO_FIELD_ID not set in .env');
+  }
+
+  let shareUrl = video.frameio_share_link;
+
+  if (!shareUrl) {
+    const result = await frameio.createShareLink(video.frameio_asset_id, { name: video.title });
+    shareUrl = result.url;
+
+    // Validate URL shape. Spec: https:// + contains frame.io. Relaxed to
+    // also accept f.io (Frame.io's own URL shortener, which is what v2
+    // share_links returns as short_url).
+    if (typeof shareUrl !== 'string' || !shareUrl.startsWith('https://') || !/frame\.io|f\.io/.test(shareUrl)) {
+      throw new Error(`Frame.io returned invalid share URL: ${String(shareUrl).slice(0, 200)}`);
+    }
+
+    const { error: uErr } = await supabase
+      .from('videos')
+      .update({ frameio_share_link: shareUrl, updated_at: new Date().toISOString() })
+      .eq('id', video.id);
+    if (uErr) throw new Error(`Supabase update failed (videos.frameio_share_link): ${uErr.message}`);
+
+    await log({
+      campusId: campus.id,
+      agent: AGENT_NAME,
+      action: 'share_link_created',
+      payload: { taskId, videoId: video.id, shareUrl, frameioId: result.id },
+    });
+  } else {
+    await log({
+      campusId: campus.id,
+      agent: AGENT_NAME,
+      action: 'share_link_reused',
+      payload: { taskId, videoId: video.id, shareUrl },
+    });
+  }
+
+  await clickup.setCustomField(taskId, fieldId, shareUrl);
+
+  await log({
+    campusId: campus.id,
+    agent: AGENT_NAME,
+    action: 'clickup_frame_link_updated',
+    payload: { taskId, videoId: video.id, fieldId, shareUrl },
+  });
 }
 
 /**
@@ -388,6 +480,7 @@ async function handleFootageDetected(taskId, campusId) {
 module.exports = {
   handleStatusChange,
   handleFootageDetected,
+  handleReviewComment,
   createDropboxFolders,
   assignEditor,
   triggerQA,

@@ -818,3 +818,126 @@ All three name-drop Alex's "Early-Ai" brand, position him as an AI-educator for 
 3. Operator tool: small script to list `processed_calendar_events` rows in `failed_cleanup` and release them after manual review.
 4. Frame.io share link creation (`done` handler) — last Phase 1 agent work.
 5. Populate `top_hooks` via Performance Agent once ≥50 videos exist; then the hook_type uniqueness path in concept generation will exercise.
+
+---
+
+## Session 8 — April 20, 2026
+
+Closed out the two remaining Phase 1 webhook stubs and wired the `done` handler. Three discrete changes, all on the same durable-inbox pattern as `handlers/clickup.js`.
+
+### Built — Dropbox webhook → Pipeline routing
+
+**`handlers/dropbox.js`** (full rewrite)
+
+The prior handler logged `dropbox_webhook_received` and stopped there. The new flow:
+
+1. Verify `X-Dropbox-Signature` HMAC-SHA256 → 401 on fail (unchanged)
+2. Insert raw payload to `webhook_inbox` with `event_type: 'dropbox_file_change'` → 500 if insert itself fails (so Dropbox retries)
+3. Return 200 immediately — event is durable
+4. Async `processDropboxChange()`:
+   - Query `videos` where `status = 'READY FOR SHOOTING'` AND `dropbox_folder IS NOT NULL`
+   - For each candidate: `dropbox.listFolder(folder + '/[FOOTAGE]')`, filter to `tag === 'file'`
+   - If files present → call `pipeline.handleFootageDetected(clickup_task_id, campus_id)`
+   - Per-video errors logged (`dropbox_list_folder_error`, `handle_footage_detected_error`) and swallowed so one bad video doesn't block the others
+   - Scan-level errors (e.g. the Supabase query itself throws) propagate and mark the inbox row `failed_at` + `error_message` + `retry_count = 1`
+5. `processed_at` on success, `failed_at` on hard failure
+
+**Rationale for the scan pattern.** Dropbox webhooks carry account IDs only, not paths — so the handler cannot match a specific folder from the payload. Scanning candidate videos on each webhook is the simplest durable pattern. `handleFootageDetected` is already idempotent (it re-verifies files exist before advancing status), so a double-fire is a no-op.
+
+**Known gap deferred to follow-up.** The 1-hour delay from CLAUDE.md is not applied. Current handler fires the status change immediately on first detection. Risk: editor gets assigned before the team's Dropbox desktop sync finishes, editor can't find footage locally. Proposed fix: add a `videos.footage_detected_at timestamptz` column, set on first detection, only route to `handleFootageDetected` once it is ≥1 hour old (via the existing scripting cron or a dedicated scanner). Ship decision: skip for now, clear TODO in the file header.
+
+### Built — Frame.io comment webhook → Pipeline routing
+
+**`scripts/migrations/2026-04-20-frameio-asset-id.sql`** (new, staged — not auto-applied)
+
+```sql
+ALTER TABLE videos ADD COLUMN IF NOT EXISTS frameio_asset_id text;
+CREATE INDEX IF NOT EXISTS videos_frameio_asset_id
+  ON videos (frameio_asset_id)
+  WHERE frameio_asset_id IS NOT NULL;
+```
+
+**Why the migration.** Pre-existing `videos` has `frameio_link` (URL the editor pastes at `edited`) and `frameio_share_link` (client-facing link at `done`) but no column for the Frame.io **asset UUID**. The incoming `comment.created` payload identifies the asset by UUID in `body.asset.id`, so a direct lookup needs a matching column. Populating `frameio_asset_id` upstream is deferred — until that is wired, the handler logs `frameio_comment_no_matching_video` for real comments, which is the documented graceful behavior.
+
+**`agents/pipeline.js`**
+
+New exported function `handleReviewComment(taskId, campusId)`:
+- `resolveTask` → `{ video, campus }`
+- `clickup.updateTask(taskId, { status: 'waiting' })`
+- Update `videos.status = dbStatus('waiting')`
+- Log `review_comment_routed`
+- Idempotent; no current-status check. A late comment on a `done` video will still bounce it to `waiting` and the operator decides.
+
+**`handlers/frameio.js`** (full rewrite)
+
+Same pattern as the Dropbox handler:
+1. Verify `X-Frameio-Signature` → 401
+2. Insert payload to `webhook_inbox` with `event_type: 'frameio:<type>'` → 500 on insert fail
+3. 200 ack
+4. Async `processFrameioEvent()` switch. Only `comment.created` is wired; other event types log `frameio_unhandled_event: <type>`.
+5. `handleCommentCreated` reads `body.asset.id`, queries `videos` by `frameio_asset_id`. If no asset ID, no matching video, or the matched video has no `clickup_task_id`, logs a warning and returns (successful processing — there is nothing to do). Otherwise calls `pipeline.handleReviewComment`.
+6. `processed_at` / `failed_at` on inbox row
+
+New log actions: `frameio_comment_no_asset_id`, `frameio_comment_no_matching_video`, `frameio_comment_video_missing_task_id`, `review_comment_routed`.
+
+### Built — Frame.io share link on `done`
+
+**`lib/frameio.js`** (new)
+
+Minimal v2 REST client. Only exports `createShareLink(assetId, options)` — other v2 endpoints (upload, comments) are deliberately out of scope. Uses `FRAMEIO_API_TOKEN` (developer token, long-lived per `docs/decisions.md` 2026-04-02). POSTs to `/assets/{asset_id}/share_links` with `{ name, password_protected, expires_at, allow_downloading }`. Returns `{ url, id, raw }`. URL resolution order: `short_url` → `url` → constructed `https://app.frame.io/shares/{id}`.
+
+**`agents/pipeline.js`**
+
+- `case 'done'`: replaced the 4-step TODO + `done_received_noop` log with `await createShareLink(taskId, campusId)`
+- `createShareLink` fleshed out from stub to full implementation per `workflows/frame-io-share-link.md`:
+  1. `resolveTask` → `{ video, campus }`; log `create_share_link_started`
+  2. `video.frameio_asset_id` null → log `create_share_link_skipped` warning and return (graceful — upload step hasn't run yet)
+  3. Missing `CLICKUP_FRAMEIO_FIELD_ID` env → throw
+  4. `video.frameio_share_link` already set → skip the Frame.io API call, log `share_link_reused` (idempotent; Scott can retrigger `done` safely)
+  5. Otherwise `frameio.createShareLink(video.frameio_asset_id, { name: video.title })`, validate URL shape, persist to `videos.frameio_share_link`, log `share_link_created`
+  6. Always end with `clickup.setCustomField(taskId, CLICKUP_FRAMEIO_FIELD_ID, shareUrl)` and log `clickup_frame_link_updated`
+
+### Spec deviations flagged
+
+1. **Frame.io URL validation** relaxed from strict "contains `frame.io`" to "contains `frame.io` or `f.io`". The v2 `share_links` endpoint returns `short_url = https://f.io/xxx` — Frame.io's own URL shortener. Rejecting it would fail every real response. Inline code comment preserves the rationale.
+2. **Frame.io endpoint ambiguity.** `workflows/frame-io-share-link.md` line 60 flags `/assets/{asset_id}/share_links` vs `/review_links` as account-dependent. Shipped with `/share_links` per `docs/integrations.md`. If live testing returns 404, one-line flip in `lib/frameio.js`.
+3. **Dropbox 1-hour delay** not implemented. Documented follow-up.
+
+### Not tested in this session
+
+No integration tests were run for any of these three changes. All three are live in the codebase but unverified against real webhook traffic. The next session should:
+- Fire a real Dropbox change into a `READY FOR SHOOTING` video's `[FOOTAGE]` folder and confirm status advances to `READY FOR EDITING`
+- Verify the Frame.io comment path once `frameio_asset_id` is populated on at least one video row
+- End-to-end the `done` handler once there's a video with a real Frame.io asset uploaded
+
+### Migrations staged, not applied
+
+- `scripts/migrations/2026-04-20-frameio-asset-id.sql` — run in Supabase SQL Editor before the Frame.io webhook or `done` handler have anything to match against.
+
+### Agent Status Matrix
+
+| Agent | Status | Trigger | Notes |
+|---|---|---|---|
+| Pipeline | **4 triggers active** | ClickUp webhook | `done` now creates Frame.io share link + updates ClickUp custom field; graceful skip when `frameio_asset_id` null |
+| QA | **Live** — FFmpeg fails closed | "edited" status | No changes |
+| Research | Built — needs APIFY_API_TOKEN | Daily 6 AM cron | No changes |
+| Performance | Built — full analysis pipeline | Monday 7 AM cron | No changes |
+| Onboarding | **Built — live tested** | `/onboard` URL | No changes |
+| Scripting | **Built — integration test passing** | `*/15 * * * *` cron | No changes |
+| Dashboard | **Live** — RPC-hardened | localhost:5173 | No changes |
+
+### Webhook handlers — all three now on the durable inbox pattern
+
+| Handler | Status | Notes |
+|---|---|---|
+| `handlers/clickup.js` | Live (Session 5) | Reference implementation |
+| `handlers/dropbox.js` | **Wired this session** | Scan → route to `pipeline.handleFootageDetected`; no 1-hour delay |
+| `handlers/frameio.js` | **Wired this session** | `comment.created` → lookup by `frameio_asset_id` → `pipeline.handleReviewComment` |
+
+### What's Next
+
+1. **Populate `videos.frameio_asset_id` upstream.** Cleanest spot is the `edited` transition — parse the "E - Frame Link" ClickUp custom field for the asset UUID, or call Frame.io v2 `GET /presentations/:id` to resolve. Without this, both the Frame.io comment handler and the `done` share link handler log graceful-skip for real traffic.
+2. **1-hour Dropbox delay.** Add `videos.footage_detected_at timestamptz` and a deferral scan.
+3. **Live-test the three handlers** with real webhook traffic once upstream populators are in place.
+4. **Frame.io endpoint confirmation.** If `/assets/{asset_id}/share_links` 404s against the live developer token, flip to `/review_links` in `lib/frameio.js`.
+5. Original Session 7 follow-ups still open: populate `campuses.google_calendar_id`, obtain brand voice examples, build the `failed_cleanup` release script.
