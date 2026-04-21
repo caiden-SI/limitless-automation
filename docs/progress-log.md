@@ -1047,3 +1047,117 @@ Migration staged at **`scripts/migrations/2026-04-20-videos-status-check.sql`** 
 2. Verify self-heal end-to-end by forcing a real pipeline failure (e.g. temporarily clearing `CLICKUP_FRAMEIO_FIELD_ID`) and watching for the full log trail + ClickUp comment.
 3. Consider wiring the onboarding `/onboarding/message` endpoint into self-heal — currently excluded because the client depends on the 500 JSON response shape, but a wrapper pattern could preserve that contract.
 4. Prior-session follow-ups still open: populate `videos.frameio_asset_id` upstream (unblocks Frame.io webhook + `done` share link), 1-hour Dropbox delay, populate `campuses.google_calendar_id`, brand voice examples, `failed_cleanup` release script.
+
+---
+
+## Session 10 — April 21, 2026
+
+Three tightly coupled changes: adversarial review fixes on the self-heal handler, the full 7-stage E2E pipeline test, and a bugfix to `lib/claude.js askJson` that the E2E surfaced.
+
+### Codex adversarial review of self-heal — 4 fixes applied
+
+Ran Codex against the self-heal diff from Session 9. Codex couldn't see the committed changes (branch diff against main was empty post-merge), but a direct in-conversation adversarial read against `lib/self-heal.js`, the wired entry points in `server.js` and `agents/*`, and the test script surfaced 10 findings. The four with real teeth got fixes; the rest are TODO comments in the code.
+
+**Fix 1 — `retry` recovery is now reachable.** Pre-fix: every call site of `selfHeal.handle()` passed no `options.retry`, so if Claude diagnosed any failure as `retry/high`, the dispatcher threw `"retry recovery unavailable"`, logged `succeeded=false`, and escalated to alert. The headline recovery action was dead code. Fix: `handle()` now accepts `context.retryFn` alongside `options.retry`; `research.run()`, `performance.run()`, and `scripting.processEvent` wire it to re-invoke themselves. Pipeline and server entry points still pass nothing — intentional, since they're webhook-invoked and the webhook_inbox is the replay mechanism.
+
+**Fix 2 — webhook inbox no longer marks recovered events failed.** Pre-fix: `pipeline.handleStatusChange` unconditionally rethrew after calling `selfHeal.handle`, so `handlers/clickup.js` wrote `failed_at` on the inbox row even when self-heal had successfully recovered (e.g., via `retry`). The inbox status lied about operation outcome. Fix: `handle()` now returns `{ recovered: boolean }`, and pipeline rethrows only when `!recovered`.
+
+**Fix 3 — orphaned self-heal promises in `server.js` neutralized.** The Express error middleware and `process.on('unhandledRejection')` fire-and-forget `selfHeal.handle(...)` without awaiting. `handle()` has an outer try/catch, but any leak would re-enter `unhandledRejection` and loop. Fix: both call sites now chain `.catch(() => {})`. Defense in depth.
+
+**Fix 4 — scripting claim cleanup skipped when recovery succeeded.** `agents/scripting.js processEvent` catch releases the `processed_calendar_events` claim on pre-write failures so the next cron tick can retry. If self-heal recovered the error (e.g., `mark_waiting`), deleting the claim would let the next cron tick re-process and duplicate side effects. Fix: only release the claim when `!result.recovered`. Trade-off documented inline: a recovered event leaves the claim in `pending`; operator transitions it manually.
+
+**TODO comments added for deferred findings (#3, #4, #7, #8):**
+- Dedup key `(agent, action)` is too coarse — every `unhandled_rejection` dedups against every other one. Should include a short hash of the error message.
+- `wasRecentlyAttempted` fails open on Supabase query errors. Tradeoff noted: fail-open risks storms during infra outages; fail-closed risks zero recovery. Kept as-is until we see storm behavior.
+- Dedup query should filter `status != 'success'` so a successful recovery doesn't silence a new different failure.
+- `safeArgs` redaction is best-effort pattern matching on key names, not a security boundary. Comment added.
+
+**SOP update (`workflows/self-healing-handler.md`, finding #6):** `mark_waiting` is non-transactional (Supabase write commits before the ClickUp call; if ClickUp throws, the two systems diverge). Documented as an accepted soft inconsistency.
+
+**Design note at top of `lib/self-heal.js`:** the 5-action allow-list has deterministic triggers (`401 → refresh_dropbox_token`, `5xx → retry`, etc.) that don't need an LLM. A hybrid design — deterministic heuristic first, Claude only when heuristic returns unknown — would be faster, cheaper, more reliable. Explicit "refactor when the action set grows beyond 5" note. Shipping current LLM-driven design now.
+
+All 6 integration test cases still pass. Added a return-shape probe verifying `{recovered: true}` on success, `{recovered: false}` on low-confidence, and `context.retryFn` firing the callback.
+
+### Built — 7-stage E2E pipeline test
+
+`scripts/test-e2e-pipeline.js` exercises every automated entry point in sequence against real Supabase, Claude, Dropbox, and ClickUp, using the real Alex Mathews student record. All test data tagged with `__e2e_test_<timestamp>` prefix and torn down in a `finally` block.
+
+| Stage | Trigger | Assertion |
+|---|---|---|
+| 1 | `scripting.processEvent(fakeEvent, campusId)` | 3 videos + 3 ClickUp tasks + `processed_calendar_events.status='completed'` |
+| 2 | `pipeline.handleStatusChange(taskId, 'ready for shooting')` | `videos.dropbox_folder` populated; `[FOOTAGE]` + `[PROJECT]` exist |
+| 3 | Upload placeholder file, then `pipeline.handleFootageDetected` | `videos.status='READY FOR EDITING'`; ClickUp side matches |
+| 4 | `pipeline.handleStatusChange(taskId, 'ready for editing')` | `videos.assignee_id` populated; editor row resolvable |
+| 5 | Upload clean SRT, then `pipeline.handleStatusChange(taskId, 'edited')` | `qa_started` log exists since test start (QA was invoked) |
+| 6 | Stub `frameio.createShareLink`, seed asset id, `handleStatusChange(taskId, 'done')` | `videos.frameio_share_link` populated (or `create_share_link_skipped` if column missing) |
+| 7 | `pipeline.handleReviewComment(taskId)` | ClickUp status = `waiting` (DB side blocked by stale constraint is tolerated) |
+
+Preflight introspects the schema and degrades assertions when migrations aren't applied:
+- **Missing `videos.frameio_asset_id` column** → stage 6 asserts `create_share_link_skipped` log fires instead of share-link write
+- **Stale `videos_status_check` rejects WAITING** → stages 5/7 catch the known constraint error, still verify flow reached the DB update and ClickUp side completed
+
+Frame.io `createShareLink` is stubbed for stage 6 (no real uploaded asset to link to). The surrounding flow — preconditions, DB write, ClickUp custom-field push — is still exercised when the column exists.
+
+Runtime: ~90 seconds. Teardown reliably deletes 3 videos rows, 1 calendar-event claim, 3 ClickUp tasks (archived, since v2 has no hard delete), and the Dropbox root folder.
+
+### Fix — `lib/claude.js askJson` now tolerates trailing prose
+
+The E2E test surfaced a pre-existing fragility: Claude frequently returns valid JSON inside markdown fences followed by an explanation — e.g.:
+
+```
+```json
+{"detections": []}
+```
+
+The transcript is clean with no stutters.
+```
+
+The old `askJson` stripped fences then `JSON.parse`'d whatever remained. The trailing prose broke the parse, and QA's stutter-check threw on every call.
+
+New `parseClaudeJson()`:
+1. Strip markdown fences (any of ` ```json `, ` ```JSON `, bare ` ``` `)
+2. Walk the text looking for `{` or `[` openers
+3. For each opener, extract the balanced structure via `extractBalanced()` — tracks depth, correctly skips brackets inside string literals and their escape sequences
+4. If the candidate parses as JSON, return it; else try the next opener
+
+The multi-opener fallback handles pathological inputs like `[see below] {...}` where the first bracket is inside prose. Works for both object responses (self-heal diagnosis, research classification, performance analysis) and array responses (scripting's 3-concept list).
+
+Pure unit tests at `scripts/test-claude-askjson.js` — 31 cases across clean JSON, markdown fences, trailing prose, leading preamble, decoy brackets, string literals containing brackets, escaped quotes, real agent shapes. All pass.
+
+**E2E verification after the fix:** stage 5 now shows `qa_started → qa_failed` (clean completion with `qa_passed=false` because LUFS fails closed without a real video) instead of the previous throw-and-escalate path.
+
+### Gaps surfaced during testing — none caused by this session's work
+
+| Gap | Surface | Path to fix |
+|---|---|---|
+| `videos.frameio_asset_id` column missing | Stage 6 degrades to skip-log assertion | Run `scripts/migrations/2026-04-20-frameio-asset-id.sql` |
+| `videos_status_check` rejects WAITING | Stages 5/7 tolerate constraint error | Run `scripts/migrations/2026-04-20-videos-status-check.sql` |
+| No upstream populator for `frameio_asset_id` | Frame.io comment handler + `done` share link log graceful-skip on real traffic | Separate work; parse from ClickUp "E - Frame Link" URL or call Frame.io v2 `GET /presentations/:id` |
+
+### Migrations still staged, not applied
+
+- `scripts/migrations/2026-04-20-frameio-asset-id.sql` — adds `videos.frameio_asset_id text` + partial index. Blocks Frame.io comment handler, `done` share link, and E2E stage 6 full verification.
+- `scripts/migrations/2026-04-20-videos-status-check.sql` — refreshes the constraint to the current status list. Blocks `pipeline.triggerQA` WAITING writes on QA failure, `pipeline.handleReviewComment`, `selfHeal.mark_waiting`, and E2E stages 5/7 full verification.
+
+### Agent + test status
+
+| Component | Status | Notes |
+|---|---|---|
+| Pipeline | 4 triggers active | Outer catch routes through self-heal with `{recovered}` rethrow gate |
+| QA | Live | Self-heal catch; retry not wired (intentional, per Session 9 plan) |
+| Research | Built — needs APIFY_API_TOKEN | Self-heal wired with retryFn |
+| Performance | Built | Self-heal wired with retryFn |
+| Onboarding | Built — live tested | Not wired (client relies on 500 JSON shape) |
+| Scripting | Built — integration test passing | Self-heal wired with retryFn; claim cleanup gated on !recovered |
+| Dashboard | Live | No changes |
+| Self-heal | Built — 6/6 test cases passing | Returns `{recovered}`; retry reachable via context.retryFn |
+| E2E pipeline test | Built — 7/7 stages passing | `__e2e_test_` prefix, clean teardown |
+| askJson parser | Fixed — 31/31 unit test cases passing | Tolerates fences + trailing prose + leading preamble |
+
+### What's Next
+
+1. **Run the two staged migrations in the Supabase SQL Editor** — in any order:
+   - `scripts/migrations/2026-04-20-frameio-asset-id.sql`
+   - `scripts/migrations/2026-04-20-videos-status-check.sql`
+2. **Re-run the E2E test** (`node scripts/test-e2e-pipeline.js`) — both migration-gated paths (stage 6 share-link write; stages 5/7 WAITING writes) should now verify fully instead of degrading to warnings.
+3. Prior-session follow-ups still open: populate `videos.frameio_asset_id` upstream (parse from "E - Frame Link" URL or resolve via Frame.io v2 API), 1-hour Dropbox delay via `footage_detected_at` column + scan, populate `campuses.google_calendar_id` for Austin, obtain brand voice examples + set `BRAND_VOICE_EXAMPLES_PATH`, build `failed_cleanup` claim-release operator script, verify self-heal end-to-end with a forced pipeline failure.
