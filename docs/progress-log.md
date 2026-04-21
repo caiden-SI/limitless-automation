@@ -1161,3 +1161,128 @@ Pure unit tests at `scripts/test-claude-askjson.js` — 31 cases across clean JS
    - `scripts/migrations/2026-04-20-videos-status-check.sql`
 2. **Re-run the E2E test** (`node scripts/test-e2e-pipeline.js`) — both migration-gated paths (stage 6 share-link write; stages 5/7 WAITING writes) should now verify fully instead of degrading to warnings.
 3. Prior-session follow-ups still open: populate `videos.frameio_asset_id` upstream (parse from "E - Frame Link" URL or resolve via Frame.io v2 API), 1-hour Dropbox delay via `footage_detected_at` column + scan, populate `campuses.google_calendar_id` for Austin, obtain brand voice examples + set `BRAND_VOICE_EXAMPLES_PATH`, build `failed_cleanup` claim-release operator script, verify self-heal end-to-end with a forced pipeline failure.
+
+---
+
+## Session 11 — April 21, 2026
+
+Both Session 10 staged migrations applied in Supabase, Dropbox OAuth refresh flow wired, and the `videos.frameio_asset_id` upstream populator built. E2E now passes 7/7 without any stubs for the asset id — Stage 5 drives the sync end-to-end through real ClickUp.
+
+### Migrations applied
+
+| Migration | Effect |
+|---|---|
+| `2026-04-20-frameio-asset-id.sql` | `videos.frameio_asset_id text` + partial index present |
+| `2026-04-20-videos-status-check.sql` | Constraint refreshed; DB now accepts `WAITING` + the full Session-3 status list |
+
+Preflight in `scripts/test-e2e-pipeline.js` now reports both as `✓` instead of warnings.
+
+### Environment fixes surfaced by the first E2E re-run
+
+Two non-secret ClickUp custom field IDs were in `.env.example` but missing from `.env`. Added with the Session-3-discovered values:
+
+```
+CLICKUP_FRAMEIO_FIELD_ID=53590f25-d850-4c19-8c7a-7b005904e04a
+CLICKUP_DROPBOX_FIELD_ID=d818eb86-41ce-416f-98aa-b1d92f13459f
+CLICKUP_INTERNAL_VIDEO_NAME_FIELD_ID=6e3fde3f-250f-470a-b88f-b382c599e998
+CLICKUP_PROJECT_DESCRIPTION_FIELD_ID=8799f3b7-3385-4f9f-9a1b-b8872ecc78f4
+```
+
+Without these, `scripting.writeConcepts` threw before any videos were inserted — Stage 1 fail.
+
+### Dropbox OAuth refresh flow now configured
+
+Second E2E attempt surfaced `expired_access_token` at Stage 2. The self-heal handler behaved exactly as specified — diagnosed `auth → refresh_dropbox_token`, attempted execution, bailed cleanly with `self_heal_alert_sent` because `DROPBOX_REFRESH_TOKEN` was missing from `.env`. Real-world validation of the Session 9/10 wiring.
+
+Ran `scripts/get-dropbox-token.js`, exchanged the authorization code for a refresh token, and added:
+
+```
+DROPBOX_REFRESH_TOKEN=xRXcr88mqGEAAAAAAAAAAYMKIxz_sE0TqwbGxPSn1CfpVkRaskPfg4DuIEHxGb_O
+```
+
+The refresh token is long-lived. `lib/dropbox.js` auto-refreshes on 401, so future access-token expirations no longer require operator action.
+
+### Built — Frame.io link sync on `edited`
+
+Last handler blocker from Sessions 8 and 10: both the Frame.io `comment.created` webhook and the `done` share-link handler had nothing to match because no upstream step populated `videos.frameio_asset_id`. Built the sync.
+
+**`lib/frameio.js`** — added `extractAssetIdFromUrl(url)`:
+
+- Handles `https://app.frame.io/player/{uuid}`, `/projects/{pid}/view/{uuid}`, `/projects/{pid}/files/{uuid}`, `/reviews/{rid}/{uuid}`, and uppercase UUIDs
+- Strips `?version=` so the version UUID is not mistaken for the asset
+- Returns `null` (by design) for `f.io/*` short URLs and `/presentations/*` or `/share/*` pages — the UUIDs in those paths are presentation/share ids, not asset ids, and resolving requires a separate API call. Opaque by document, not by accident.
+- 17/17 unit tests passing in `scripts/test-frameio-extract.js`
+
+**`agents/pipeline.js`** — new exported `syncFrameioLink(taskId, campusId)`:
+
+1. Resolve video + campus via `resolveTask`
+2. `clickup.getTask(taskId)`, find the "E - Frame Link" custom field by `CLICKUP_FRAMEIO_FIELD_ID`
+3. If empty → log `frameio_link_sync_skipped` warning, return
+4. Extract asset UUID from URL
+5. If both `frameio_link` and `frameio_asset_id` already match the incoming values → log `frameio_link_unchanged`, no write
+6. Otherwise write both columns, log `frameio_link_synced` (success) or `frameio_link_opaque` (warning — raw URL stored, asset id null)
+7. Never throws — catches internally and logs `frameio_link_sync_error` so QA can still run
+
+Called from `handleStatusChange`'s `edited` case before `triggerQA`. Costs one extra ClickUp API call per `edited` fire.
+
+### E2E test updates
+
+Stage 5 now drives the new sync through real ClickUp:
+
+- Sets "E - Frame Link" to `https://app.frame.io/player/a1b2c3d4-e5f6-7890-abcd-ef1234567890` via `clickup.setCustomField` before flipping status
+- Asserts `videos.frameio_link` matches the URL and `videos.frameio_asset_id === a1b2c3d4-e5f6-7890-abcd-ef1234567890` after
+
+Stage 6 stopped manually seeding `frameio_asset_id` — it now inherits whatever Stage 5 synced. Frame.io `createShareLink` is still stubbed at Stage 6 (no real uploaded asset to link against).
+
+### E2E — 7/7 green
+
+```
+  ✓ "E - Frame Link" set on ClickUp task: https://app.frame.io/player/a1b2c3d4-e5f6-7890-abcd-ef1234567890
+[pipeline] [SUCCESS] frameio_link_synced
+  ✓ videos.frameio_link populated from ClickUp custom field
+  ✓ videos.frameio_asset_id extracted: a1b2c3d4-e5f6-7890-abcd-ef1234567890
+```
+
+Runtime ~90 seconds. Teardown clean (3 videos, 1 claim, 3 archived ClickUp tasks, 1 Dropbox folder).
+
+### What's live on real traffic now
+
+| Path | Status before Session 11 | Status after |
+|---|---|---|
+| Editor pastes player URL → `edited` → asset id captured | Not wired | Live |
+| Frame.io `comment.created` webhook matches comment to video | Logged `no_matching_video` on every real comment | Works when URL is in supported shape |
+| `done` → Frame.io share link created + pushed to ClickUp | Logged `create_share_link_skipped` on every real `done` | Works when URL is in supported shape |
+
+For opaque URLs (`f.io/*`, `/presentations/*`): raw URL still stored in `videos.frameio_link`, asset id left null, `frameio_link_opaque` logged. Handlers downstream continue to graceful-skip for those videos. Ship current behavior; add a Frame.io v2 resolver later only if opaque URLs turn out to be the common editor pattern in practice.
+
+### Files changed
+
+- `agents/pipeline.js` (+81 lines) — `syncFrameioLink` + wire into `edited` case, exported
+- `lib/frameio.js` (+49 lines) — `extractAssetIdFromUrl`
+- `scripts/test-e2e-pipeline.js` (+36/-10) — Stage 5 sets the field + asserts sync; Stage 6 uses Stage 5's asset id
+- `scripts/test-frameio-extract.js` (new, 66 lines) — 17-case URL parser unit test
+- `.env` — 4 ClickUp field IDs + `DROPBOX_REFRESH_TOKEN`
+
+### Agent + test status
+
+| Component | Status | Notes |
+|---|---|---|
+| Pipeline | 4 triggers active + `edited` now syncs Frame.io link | Stage-5 asset-id seeded directly from ClickUp; downstream handlers now live on real traffic |
+| QA | Live | No changes |
+| Research | Built — needs APIFY_API_TOKEN | No changes |
+| Performance | Built | No changes |
+| Onboarding | Built — live tested | No changes |
+| Scripting | Built — integration test passing | No changes |
+| Dashboard | Live | No changes |
+| Self-heal | Built — 6/6 test cases + real-world validation this session | Dropbox refresh-token path exercised against live expired token; escalation fired cleanly when refresh token was missing |
+| E2E pipeline test | 7/7 stages passing — no Frame.io asset-id stub | Full sync path covered |
+| Frame.io URL parser | 17/17 unit cases passing | Covers player, view, files, reviews, presentations, f.io, bare UUID, garbage, nulls |
+
+### What's Next
+
+1. **1-hour Dropbox delay.** Add `videos.footage_detected_at timestamptz` and a deferral scan so `handleFootageDetected` only advances status once the folder has been stable for ≥1 hour. Closes the known gap from Session 8.
+2. **Populate `campuses.google_calendar_id` for Austin.** Scott-owned. Until it lands, the Scripting cron logs a skip for Austin every 15 minutes.
+3. **Brand voice examples.** Obtain reference scripts from Scott, set `BRAND_VOICE_EXAMPLES_PATH`. Until then the Scripting Agent hedges tone from `claude_project_context` alone.
+4. **`failed_cleanup` release script.** Small operator tool to list `processed_calendar_events` rows with `status='failed_cleanup'` and release them after manual review.
+5. **Verify self-heal end-to-end with a forced failure.** Session 9 follow-up; partially validated this session through the real Dropbox auth expiry, but a forced pipeline error (e.g., temporarily clear `CLICKUP_FRAMEIO_FIELD_ID`) would exercise the full ClickUp-comment escalation path.
+6. **Optional: Frame.io v2 presentation/share resolver.** Only if opaque URLs become the common editor pattern in practice. Not worth building until there's evidence.
