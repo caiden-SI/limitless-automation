@@ -142,16 +142,30 @@ async function processEvent(event, campusId) {
     // Self-heal runs first (it logs the original error per CLAUDE.md rule 1).
     // The rethrow at the bottom is still caught by runForCampus, which swallows
     // per-event errors so one bad event doesn't stall the run.
-    await selfHeal.handle(err, {
+    //
+    // retryFn wires the retry recovery action to re-invoke processEvent for
+    // this same event. Note: the claim insert at the top of processEvent is
+    // atomic — a retry will find its own pending claim and early-skip, so
+    // retry here only helps when the failure happens BEFORE the claim insert.
+    const result = await selfHeal.handle(err, {
       agent: AGENT_NAME,
       action: 'processEvent',
       campusId,
       payload: { eventId: event?.id, title: event?.title },
+      retryFn: () => processEvent(event, campusId),
     });
 
-    // Pre-write failure (context load, Claude, validation): no external side effects
-    // exist yet, so release the claim so a future cron tick can retry.
-    if (claimId) {
+    // Pre-write failure (context load, Claude, validation): no external side
+    // effects exist yet, so release the claim so a future cron tick can retry.
+    //
+    // CRITICAL: skip the claim release if self-heal recovered the error.
+    // A successful mark_waiting or retry has already taken the right action;
+    // deleting the claim would let the next cron tick re-process the event
+    // and duplicate side effects. The trade-off is that a successfully
+    // recovered event leaves the claim in 'pending' state; an operator can
+    // transition it to 'completed' or delete it manually. See Session 9
+    // adversarial review finding #10.
+    if (!result?.recovered && claimId) {
       const { error: relErr } = await supabase.from('processed_calendar_events').delete().eq('id', claimId);
       if (relErr) {
         // If the claim row somehow cannot be deleted, mark it failed_cleanup

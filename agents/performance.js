@@ -158,7 +158,13 @@ async function run(campusId) {
   } catch (err) {
     // Cron-invoked; swallow after self-heal so runAll continues to next campus.
     // self-heal logs the original error itself (step 1 of the contract).
-    await selfHeal.handle(err, { agent: AGENT_NAME, action: 'run', campusId });
+    // retryFn lets Claude's retry action re-invoke run() for transient 5xx.
+    await selfHeal.handle(err, {
+      agent: AGENT_NAME,
+      action: 'run',
+      campusId,
+      retryFn: () => run(campusId),
+    });
     return null;
   }
 }

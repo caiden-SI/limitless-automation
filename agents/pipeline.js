@@ -53,16 +53,18 @@ async function handleStatusChange(taskId, newStatus, campusId) {
         break;
     }
   } catch (err) {
-    // Self-heal logs + diagnoses + may recover. We keep the rethrow so
-    // handlers/clickup.js can still mark webhook_inbox failed for replay.
-    await selfHeal.handle(err, {
+    // Self-heal logs + diagnoses + may recover. Rethrow only when recovery
+    // did NOT happen, so handlers/clickup.js marks webhook_inbox failed for
+    // replay. If self-heal recovered (e.g., retry succeeded), the operation
+    // effectively completed and the inbox row should not be marked failed.
+    const result = await selfHeal.handle(err, {
       agent: AGENT_NAME,
       action: 'handleStatusChange',
       taskId,
       campusId,
       payload: { newStatus },
     });
-    throw err;
+    if (!result || !result.recovered) throw err;
   }
 }
 

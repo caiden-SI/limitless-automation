@@ -171,7 +171,16 @@ async function run(campusId, options = {}) {
     return stats;
   } catch (err) {
     // Cron-invoked; swallow after self-heal so runAll continues to next campus.
-    await selfHeal.handle(err, { agent: AGENT_NAME, action: 'run', campusId });
+    // retryFn lets Claude's retry recovery action re-invoke this same run for
+    // the campus after a 2s delay — appropriate for transient Apify/Claude
+    // 5xx responses. Retry runs inside handle() with the dedup window live,
+    // so the second attempt's own error logs won't infinitely loop.
+    await selfHeal.handle(err, {
+      agent: AGENT_NAME,
+      action: 'run',
+      campusId,
+      retryFn: () => run(campusId, options),
+    });
     return stats;
   }
 }

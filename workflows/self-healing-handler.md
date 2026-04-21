@@ -109,6 +109,7 @@ The full allowed set. Claude may only pick from this list. Anything else is trea
 - **Recovery action succeeds but the underlying problem returns on the next invocation.** Accept this. The 5-minute window will fire the ClickUp alert on the second failure. This is the whole point of retrying only ONCE.
 - **A bug in agent code produces errors on every invocation forever.** The 5-minute window resets, so each new firing triggers one recovery attempt then one ClickUp comment. Scott and Caiden see comments on every affected task. This is loud by design. Do not add a global "suppress after N alerts" throttle: the noise is the signal.
 - **Recovery `mark_waiting` is invoked on a task that is already `waiting`.** Idempotent. No harm.
+- **`mark_waiting` is not transactional.** The recovery writes `videos.status = 'WAITING'` in Supabase first, then calls `clickup.updateTask(..., status: 'waiting')`. If the ClickUp call throws (transient API outage, rate limit), the Supabase update is already committed and not rolled back. Reads are inconsistent across the two systems until an operator reconciles. This matches the existing `pipeline.triggerQA` behavior (same two-write pattern, same risk) and is accepted as a soft inconsistency. Self-heal runs in unusual conditions (post-error) where the ClickUp call is *more* likely to fail, so this edge case is disproportionately likely compared to the normal `triggerQA` path.
 
 ## Error handling
 

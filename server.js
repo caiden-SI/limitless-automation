@@ -145,11 +145,15 @@ app.get('/onboarding/student', async (req, res) => {
 // Global error handler — catch unhandled route errors
 app.use((err, _req, res, _next) => {
   // Fire self-heal asynchronously; the 500 response does not wait on it.
+  // .catch(() => {}) guards against any leaked rejection escaping the handler
+  // (handle() has its own outer try/catch but defense-in-depth prevents a
+  // theoretical leak from re-entering process.on('unhandledRejection') and
+  // looping back into self-heal).
   selfHeal.handle(err, {
     agent: 'server',
     action: 'unhandled_route_error',
     payload: { route: _req.originalUrl, method: _req.method },
-  });
+  }).catch(() => {});
   res.status(500).json({ error: 'Internal server error' });
 });
 
@@ -177,8 +181,10 @@ app.listen(PORT, () => {
   scheduler.register('scripting-agent', '*/15 * * * *', scripting.runAll);
 });
 
-// Catch unhandled promise rejections — hand to self-heal before PM2 restarts
+// Catch unhandled promise rejections — hand to self-heal before PM2 restarts.
+// .catch(() => {}) prevents a leaked rejection from re-entering this same
+// listener and looping.
 process.on('unhandledRejection', (reason) => {
   const err = reason instanceof Error ? reason : new Error(String(reason));
-  selfHeal.handle(err, { agent: 'server', action: 'unhandled_rejection' });
+  selfHeal.handle(err, { agent: 'server', action: 'unhandled_rejection' }).catch(() => {});
 });
