@@ -1402,8 +1402,50 @@ Stage 3 of the E2E test calls `handleFootageDetected` directly, bypassing the ne
 
 ### What's Next
 
-1. **Populate `campuses.google_calendar_id` for Austin.** Scott-owned. Until it lands, scripting cron logs a skip for Austin every 15 minutes.
-2. **Brand voice examples.** Obtain reference scripts from Scott, set `BRAND_VOICE_EXAMPLES_PATH`.
-3. **`failed_cleanup` release script.** Small operator tool for `processed_calendar_events` rows stuck in `failed_cleanup`.
-4. **Verify self-heal end-to-end with a forced failure.** Session 9 follow-up; partially validated last session through the real Dropbox auth expiry. Forcing a fresh pipeline error (e.g., temporarily clear `CLICKUP_FRAMEIO_FIELD_ID`) would exercise the full ClickUp-comment escalation path.
-5. **Optional: Frame.io v2 presentation/share resolver.** Only if opaque "E - Frame Link" URLs become the common editor pattern in practice.
+1. **Brand voice examples.** Obtain reference scripts from Scott, set `BRAND_VOICE_EXAMPLES_PATH`.
+2. **`failed_cleanup` release script.** Small operator tool for `processed_calendar_events` rows stuck in `failed_cleanup`.
+3. **Verify self-heal end-to-end with a forced failure.** Session 9 follow-up; partially validated last session through the real Dropbox auth expiry. Forcing a fresh pipeline error (e.g., temporarily clear `CLICKUP_FRAMEIO_FIELD_ID`) would exercise the full ClickUp-comment escalation path.
+4. **Optional: Frame.io v2 presentation/share resolver.** Only if opaque "E - Frame Link" URLs become the common editor pattern in practice.
+
+---
+
+## Session 13 — April 21, 2026
+
+Short session. Closed the Google Calendar service-account provisioning that had been open since Session 1. Scripting cron can now pick up real calendar events.
+
+### Provisioned
+
+- Scott populated `campuses.google_calendar_id = agencyproduction@limitlessyt.com` for Austin
+- Service account `limitless-agent@limitless-automation-492715.iam.gserviceaccount.com` created in GCP project `limitless-automation-492715`; JSON key dropped at `credentials/google-calendar-sa.json` (gitignored)
+- Service account granted read access to `agencyproduction@limitlessyt.com` via Google Calendar share settings
+
+### Built — `scripts/verify-gcal.js`
+
+Five-step diagnostic: env var set → JSON file present + parseable → Austin campus has `google_calendar_id` in DB → JWT auth succeeds against live Google Calendar API → sample the next 48 hours of events. On failure, each step prints the exact fix (e.g., 404 → "share {calendarId} with {serviceAccountEmail}").
+
+Runs in <3s. Safe to re-run anytime (read-only). Reusable if any campus's calendar access breaks in the future.
+
+### Verified
+
+```
+[1] ✓ GOOGLE_CALENDAR_CREDENTIALS_PATH set
+[2] ✓ credentials file present
+[3] ✓ Alpha School Austin: google_calendar_id = agencyproduction@limitlessyt.com
+[4] ✓ API call succeeded — 0 event(s) in the next 48 hours
+[5]   (no upcoming events — connectivity proven)
+```
+
+Zero events is not a failure — it confirms the API call returned 200 without a 404 (404 is the signature of "calendar doesn't exist or we have no access"). Scripting cron will begin picking up events on its next `*/15` tick once Scott schedules one.
+
+### Agent status
+
+| Agent | Status |
+|---|---|
+| Scripting | **Now actually running against real Google Calendar events.** Prior to this session the cron ran every 15 minutes but logged a per-campus skip because `google_calendar_id` was null. |
+
+### What's Next
+
+1. **Brand voice examples** (Scott-owned)
+2. **`failed_cleanup` release script** (small operator tool)
+3. **Forced self-heal E2E verification** (test-only)
+4. **Optional: Frame.io v2 presentation/share resolver** (defer until opaque URLs are evidenced in real traffic)
