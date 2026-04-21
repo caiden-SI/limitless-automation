@@ -5,21 +5,15 @@
 // Processing happens asynchronously. Failures update the inbox row
 // instead of being silently dropped (same pattern as handlers/clickup.js).
 //
-// Detection strategy: Dropbox webhooks only carry account IDs, not paths.
-// On each webhook, scan videos in READY FOR SHOOTING with a dropbox_folder
-// set, list each [FOOTAGE] subfolder, and route any with files present
-// to pipeline.handleFootageDetected. handleFootageDetected is idempotent.
-//
-// TODO: 1-hour delay from CLAUDE.md is not applied here yet — status change
-// fires as soon as footage is detected. Proposed fix: add a
-// videos.footage_detected_at column, set it on first detection, and only
-// route to handleFootageDetected when it is ≥1 hour old. Deferred to a
-// follow-up change.
+// Detection strategy: Dropbox webhooks carry account IDs only, not paths.
+// On each webhook, delegate to pipeline.scanPendingFootage which enforces
+// the 1-hour stabilization window before advancing any video to
+// READY FOR EDITING. A 15-minute cron (registered in server.js) catches
+// videos whose delay elapses without a follow-up Dropbox webhook firing.
 
 const crypto = require('crypto');
 const { supabase } = require('../lib/supabase');
 const { log } = require('../lib/logger');
-const dropboxLib = require('../lib/dropbox');
 const pipeline = require('../agents/pipeline');
 
 /**
@@ -113,13 +107,10 @@ async function handler(req, res) {
 }
 
 /**
- * Scan videos awaiting footage and route any with files present to
- * pipeline.handleFootageDetected.
- *
- * Per-video errors are logged and swallowed so one bad video does not
- * block the rest of the scan. Errors that break the whole scan (e.g.
- * the Supabase query itself fails) propagate and mark the inbox row
- * failed.
+ * Log receipt and delegate the scan to pipeline.scanPendingFootage.
+ * Scan-level errors (e.g. the Supabase query itself throws) propagate
+ * and mark the webhook_inbox row failed; per-video errors are handled
+ * inside scanPendingFootage.
  */
 async function processDropboxChange(body, inboxId) {
   await log({
@@ -128,71 +119,12 @@ async function processDropboxChange(body, inboxId) {
     payload: { accounts: body?.list_folder?.accounts, inboxId },
   });
 
-  const { data: candidates, error } = await supabase
-    .from('videos')
-    .select('id, clickup_task_id, campus_id, dropbox_folder, title')
-    .eq('status', 'READY FOR SHOOTING')
-    .not('dropbox_folder', 'is', null);
-
-  if (error) throw new Error(`Supabase query failed (videos): ${error.message}`);
-
-  if (!candidates || candidates.length === 0) {
-    await log({ agent: 'pipeline', action: 'dropbox_scan_no_candidates', payload: { inboxId } });
-    return;
-  }
-
-  let triggered = 0;
-  let skipped = 0;
-
-  for (const video of candidates) {
-    if (!video.clickup_task_id) {
-      skipped++;
-      continue;
-    }
-
-    const footagePath = `${video.dropbox_folder}/[FOOTAGE]`;
-
-    let files = [];
-    try {
-      const entries = await dropboxLib.listFolder(footagePath);
-      files = entries.filter((e) => e.tag === 'file');
-    } catch (err) {
-      await log({
-        campusId: video.campus_id,
-        agent: 'pipeline',
-        action: 'dropbox_list_folder_error',
-        status: 'warning',
-        errorMessage: err.message,
-        payload: { videoId: video.id, footagePath },
-      });
-      continue;
-    }
-
-    if (files.length === 0) {
-      skipped++;
-      continue;
-    }
-
-    try {
-      await pipeline.handleFootageDetected(video.clickup_task_id, video.campus_id);
-      triggered++;
-    } catch (err) {
-      await log({
-        campusId: video.campus_id,
-        agent: 'pipeline',
-        action: 'handle_footage_detected_error',
-        status: 'error',
-        errorMessage: err.message,
-        payload: { videoId: video.id, taskId: video.clickup_task_id, stack: err.stack },
-      });
-      // Continue — don't let one bad video block the others
-    }
-  }
+  const counts = await pipeline.scanPendingFootage();
 
   await log({
     agent: 'pipeline',
     action: 'dropbox_scan_complete',
-    payload: { inboxId, candidates: candidates.length, triggered, skipped },
+    payload: { inboxId, ...counts, trigger: 'webhook' },
   });
 }
 

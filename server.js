@@ -14,6 +14,7 @@ const scheduler = require('./lib/scheduler');
 const research = require('./agents/research');
 const performance = require('./agents/performance');
 const scripting = require('./agents/scripting');
+const pipeline = require('./agents/pipeline');
 
 const { execFile } = require('child_process');
 
@@ -179,6 +180,9 @@ app.listen(PORT, () => {
   scheduler.register('performance-agent', '0 7 * * 1', performance.runAll);
   // Scripting Agent — every 15 minutes, 48-hour lookahead on Google Calendar
   scheduler.register('scripting-agent', '*/15 * * * *', scripting.runAll);
+  // Pending-footage scan — every 15 minutes, catches videos whose 1-hour
+  // delay elapses without a follow-up Dropbox webhook firing
+  scheduler.register('footage-scan', '*/15 * * * *', pipeline.scanPendingFootageAll);
 });
 
 // Catch unhandled promise rejections — hand to self-heal before PM2 restarts.

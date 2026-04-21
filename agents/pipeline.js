@@ -509,6 +509,184 @@ async function createShareLink(taskId, campusId) {
   });
 }
 
+const FOOTAGE_DELAY_MS = 60 * 60 * 1000; // 1 hour per CLAUDE.md
+
+/**
+ * Scan READY FOR SHOOTING videos for footage readiness, enforcing the
+ * 1-hour stabilization window before advancing to READY FOR EDITING.
+ *
+ * Per-video state machine on videos.footage_detected_at:
+ *   1. Files absent, timestamp NULL       → no-op
+ *   2. Files absent, timestamp set        → clear timestamp (files vanished
+ *      within the delay window; reset the clock so the next upload gets a
+ *      fresh 1-hour wait)
+ *   3. Files present, timestamp NULL      → set timestamp = now, stay in
+ *      READY FOR SHOOTING
+ *   4. Files present, timestamp <1hr old  → no-op (still stabilizing)
+ *   5. Files present, timestamp ≥1hr old  → call handleFootageDetected to
+ *      advance to READY FOR EDITING
+ *
+ * Shared by the Dropbox webhook handler (fast path on file-change events)
+ * and a 15-minute cron (catches videos where no follow-up webhook fires).
+ * Per-video errors are logged and swallowed. Scan-level errors propagate.
+ *
+ * @param {string} [campusId] - Optional; if provided, scope to one campus.
+ * @returns {Promise<{candidates:number, detected:number, advanced:number, cleared:number, waiting:number, skipped:number}>}
+ */
+async function scanPendingFootage(campusId) {
+  let query = supabase
+    .from('videos')
+    .select('id, clickup_task_id, campus_id, dropbox_folder, title, footage_detected_at')
+    .eq('status', dbStatus('ready for shooting'))
+    .not('dropbox_folder', 'is', null);
+  if (campusId) query = query.eq('campus_id', campusId);
+
+  const { data: candidates, error } = await query;
+  if (error) throw new Error(`Supabase query failed (videos): ${error.message}`);
+
+  const counts = { candidates: candidates?.length || 0, detected: 0, advanced: 0, cleared: 0, waiting: 0, skipped: 0 };
+
+  if (!candidates || candidates.length === 0) return counts;
+
+  const now = Date.now();
+
+  for (const video of candidates) {
+    if (!video.clickup_task_id) {
+      counts.skipped++;
+      continue;
+    }
+
+    const footagePath = `${video.dropbox_folder}/[FOOTAGE]`;
+    let files = [];
+    try {
+      const entries = await dropbox.listFolder(footagePath);
+      files = entries.filter((e) => e.tag === 'file');
+    } catch (err) {
+      await log({
+        campusId: video.campus_id,
+        agent: AGENT_NAME,
+        action: 'dropbox_list_folder_error',
+        status: 'warning',
+        errorMessage: err.message,
+        payload: { videoId: video.id, footagePath },
+      });
+      continue;
+    }
+
+    const hasFiles = files.length > 0;
+    const detectedAtMs = video.footage_detected_at ? new Date(video.footage_detected_at).getTime() : null;
+
+    if (!hasFiles) {
+      if (detectedAtMs != null) {
+        // Files disappeared before the window elapsed — reset the clock.
+        const { error: uErr } = await supabase
+          .from('videos')
+          .update({ footage_detected_at: null, updated_at: new Date().toISOString() })
+          .eq('id', video.id);
+        if (!uErr) {
+          counts.cleared++;
+          await log({
+            campusId: video.campus_id,
+            agent: AGENT_NAME,
+            action: 'footage_detection_cleared',
+            payload: { videoId: video.id, taskId: video.clickup_task_id, reason: 'files_removed_before_delay_elapsed' },
+          });
+        }
+      } else {
+        counts.skipped++;
+      }
+      continue;
+    }
+
+    // Files present.
+    if (detectedAtMs == null) {
+      // First detection — stamp and wait.
+      const { error: uErr } = await supabase
+        .from('videos')
+        .update({ footage_detected_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+        .eq('id', video.id);
+      if (uErr) {
+        await log({
+          campusId: video.campus_id,
+          agent: AGENT_NAME,
+          action: 'footage_detected_stamp_error',
+          status: 'error',
+          errorMessage: uErr.message,
+          payload: { videoId: video.id },
+        });
+        continue;
+      }
+      counts.detected++;
+      await log({
+        campusId: video.campus_id,
+        agent: AGENT_NAME,
+        action: 'footage_detected_pending_delay',
+        payload: { videoId: video.id, taskId: video.clickup_task_id, fileCount: files.length, delayHours: 1 },
+      });
+      continue;
+    }
+
+    if (now - detectedAtMs < FOOTAGE_DELAY_MS) {
+      counts.waiting++;
+      continue;
+    }
+
+    // Delay elapsed — advance.
+    try {
+      await handleFootageDetected(video.clickup_task_id, video.campus_id);
+      // Clear the marker so a cycle back to READY FOR SHOOTING (rare but
+      // possible) doesn't short-circuit the delay with a stale timestamp.
+      await supabase
+        .from('videos')
+        .update({ footage_detected_at: null })
+        .eq('id', video.id);
+      counts.advanced++;
+    } catch (err) {
+      await log({
+        campusId: video.campus_id,
+        agent: AGENT_NAME,
+        action: 'handle_footage_detected_error',
+        status: 'error',
+        errorMessage: err.message,
+        payload: { videoId: video.id, taskId: video.clickup_task_id, stack: err.stack },
+      });
+      // continue — don't let one bad video block the rest
+    }
+  }
+
+  return counts;
+}
+
+/**
+ * Iterate campuses and run scanPendingFootage for each. Called by the
+ * 15-minute cron registered in server.js.
+ */
+async function scanPendingFootageAll() {
+  const { data: campuses, error } = await supabase
+    .from('campuses')
+    .select('id, name')
+    .eq('active', true);
+  if (error) throw new Error(`Supabase query failed (campuses): ${error.message}`);
+
+  const results = [];
+  for (const campus of campuses || []) {
+    try {
+      const counts = await scanPendingFootage(campus.id);
+      results.push({ campusId: campus.id, name: campus.name, ...counts });
+    } catch (err) {
+      await log({
+        campusId: campus.id,
+        agent: AGENT_NAME,
+        action: 'footage_scan_campus_error',
+        status: 'error',
+        errorMessage: err.message,
+        payload: { stack: err.stack },
+      });
+    }
+  }
+  return results;
+}
+
 /**
  * Handle footage detected in Dropbox folder.
  * Called after 1-hour delay from Dropbox webhook.
@@ -570,4 +748,6 @@ module.exports = {
   triggerQA,
   syncFrameioLink,
   createShareLink,
+  scanPendingFootage,
+  scanPendingFootageAll,
 };
