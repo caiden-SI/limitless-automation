@@ -1449,3 +1449,51 @@ Zero events is not a failure — it confirms the API call returned 200 without a
 2. **`failed_cleanup` release script** (small operator tool)
 3. **Forced self-heal E2E verification** (test-only)
 4. **Optional: Frame.io v2 presentation/share resolver** (defer until opaque URLs are evidenced in real traffic)
+
+---
+
+## Session 14 — April 21, 2026
+
+Built the `failed_cleanup` release operator tool. Closes the outstanding gap from Session 7 on the scripting side.
+
+### Built — `scripts/release-failed-cleanup.js`
+
+Five CLI modes against `processed_calendar_events`:
+
+| Mode | Command |
+|---|---|
+| List | `node scripts/release-failed-cleanup.js` |
+| Inspect | `node scripts/release-failed-cleanup.js <id>` |
+| Release one | `node scripts/release-failed-cleanup.js <id> --release` |
+| Release all (gated) | `node scripts/release-failed-cleanup.js --release-all --confirm` |
+| Include pending | `node scripts/release-failed-cleanup.js --include-pending` |
+
+**Inspect** joins against `videos` to show which `video_ids` from the failed attempt still exist in Supabase vs. which the rollback cleaned up. This is the decisive signal the operator needs: if orphan videos remain, releasing without first cleaning them up will cause duplicates on retry.
+
+**Release** = delete the claim row. Does not touch videos or ClickUp. Per the `rollback` contract in `agents/scripting.js`, a clean rollback already deletes the claim; `failed_cleanup` means rollback couldn't finish, so the operator has to decide whether the orphans are tolerable before allowing retry.
+
+### Safety guards
+
+- `--release-all` without `--confirm` is rejected with a preview hint.
+- Refuses to release `status='completed'` claims — those intentionally dedup future runs and should never be deleted.
+- Single-claim release with non-empty `video_ids` prints a warning to check for orphans before the delete runs.
+
+### Verified end to end
+
+Seeded synthetic `failed_cleanup` claims, walked every mode:
+
+- `--help`, empty list, `--include-pending` on empty DB: clean messages
+- Inspect: full detail including error payload + orphan-video cross-check
+- Single release: warning fires when `video_ids` non-empty, claim deleted, confirmation printed
+- `--release-all` without `--confirm`: blocked
+- `--release-all --confirm`: released 3 seeded claims
+
+### Files changed
+
+- `scripts/release-failed-cleanup.js` (new)
+
+### What's Next
+
+1. **Brand voice examples** (Scott-owned)
+2. **Forced self-heal E2E verification** (test-only — force a real pipeline error and walk the ClickUp-comment escalation path end to end)
+3. **Optional: Frame.io v2 presentation/share resolver** (defer until opaque URLs are evidenced in real traffic)
