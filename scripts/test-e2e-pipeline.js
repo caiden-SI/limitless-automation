@@ -287,8 +287,11 @@ async function stage4() {
   ok(`editor assigned: ${editor.name} (clickup_user_id=${editor.clickup_user_id})`);
 }
 
+const STAGE5_ASSET_UUID = 'a1b2c3d4-e5f6-7890-abcd-ef1234567890';
+const STAGE5_FRAMEIO_URL = `https://app.frame.io/player/${STAGE5_ASSET_UUID}`;
+
 async function stage5() {
-  banner('STAGE 5 \u2014 edited \u2192 QA runs');
+  banner('STAGE 5 \u2014 edited \u2192 QA runs (via Frame.io link sync)');
 
   const { data: video } = await supabase
     .from('videos')
@@ -311,6 +314,12 @@ async function stage5() {
   await uploadDropboxFile(srtPath, Buffer.from(cleanSrt));
   ok('clean SRT uploaded to [PROJECT]');
 
+  // Editor pastes the Frame.io asset URL into the "E - Frame Link" custom
+  // field before flipping status to `edited`. syncFrameioLink() reads it.
+  const fieldId = process.env.CLICKUP_FRAMEIO_FIELD_ID;
+  await clickup.setCustomField(pickedTaskId, fieldId, STAGE5_FRAMEIO_URL);
+  ok(`"E - Frame Link" set on ClickUp task: ${STAGE5_FRAMEIO_URL}`);
+
   // handleStatusChange internally invokes QA and may throw if QA throws.
   // Either outcome is acceptable for this stage — we care that the `edited`
   // trigger routed to QA, not that QA's own inner pieces all succeed.
@@ -320,6 +329,21 @@ async function stage5() {
     warn(`handleStatusChange('edited') threw: ${err.message.slice(0, 120)}`);
     info('(acceptable — self-heal handles; see agent_logs for the recovery trail)');
   }
+
+  // Assert: syncFrameioLink ran and populated both columns.
+  const { data: synced } = await supabase
+    .from('videos')
+    .select('frameio_link, frameio_asset_id')
+    .eq('id', pickedVideoId)
+    .single();
+  if (synced.frameio_link !== STAGE5_FRAMEIO_URL) {
+    throw new Error(`videos.frameio_link expected ${STAGE5_FRAMEIO_URL}, got ${synced.frameio_link}`);
+  }
+  if (synced.frameio_asset_id !== STAGE5_ASSET_UUID) {
+    throw new Error(`videos.frameio_asset_id expected ${STAGE5_ASSET_UUID}, got ${synced.frameio_asset_id}`);
+  }
+  ok(`videos.frameio_link populated from ClickUp custom field`);
+  ok(`videos.frameio_asset_id extracted: ${STAGE5_ASSET_UUID}`);
 
   // Assertion: QA was invoked (qa_started logged since test start).
   const { data: startedLogs } = await supabase
@@ -366,14 +390,10 @@ async function stage6(frameioAssetIdColumnExists) {
   });
   info('frameio.createShareLink stubbed for this stage');
 
-  if (frameioAssetIdColumnExists) {
-    await supabase
-      .from('videos')
-      .update({ frameio_asset_id: TEST_PREFIX + '_asset' })
-      .eq('id', pickedVideoId);
-    ok('frameio_asset_id seeded');
+  if (!frameioAssetIdColumnExists) {
+    warn('frameio_asset_id column missing \u2014 createShareLink will graceful-skip');
   } else {
-    warn('skipping frameio_asset_id seed \u2014 column missing; createShareLink will graceful-skip');
+    info(`using asset id synced from Stage 5: ${STAGE5_ASSET_UUID}`);
   }
 
   await pipeline.handleStatusChange(pickedTaskId, 'done', null);

@@ -41,6 +41,7 @@ async function handleStatusChange(taskId, newStatus, campusId) {
         break;
 
       case 'edited':
+        await syncFrameioLink(taskId, campusId);
         await triggerQA(taskId, campusId);
         break;
 
@@ -322,6 +323,85 @@ async function triggerQA(taskId, campusId) {
 }
 
 /**
+ * Read the ClickUp "E - Frame Link" custom field and populate
+ * videos.frameio_link (raw URL) and videos.frameio_asset_id (extracted UUID).
+ *
+ * Runs on the `edited` transition, before QA. Graceful no-op when:
+ *   - custom field is empty (editor hasn't pasted yet)
+ *   - URL is opaque (f.io, /presentations/) — asset UUID not derivable
+ *
+ * Idempotent: if the extracted asset id matches the one already on the video,
+ * skips writes. If the URL changed, updates both columns and logs the change.
+ * Never throws — QA must run regardless of whether we resolved the asset id.
+ */
+async function syncFrameioLink(taskId, campusId) {
+  try {
+    const { video, campus } = await resolveTask(taskId, campusId);
+    const fieldId = process.env.CLICKUP_FRAMEIO_FIELD_ID;
+
+    const task = await clickup.getTask(taskId);
+    const field = (task.custom_fields || []).find((f) => f.id === fieldId);
+    const url = typeof field?.value === 'string' ? field.value.trim() : null;
+
+    if (!url) {
+      await log({
+        campusId: campus.id,
+        agent: AGENT_NAME,
+        action: 'frameio_link_sync_skipped',
+        status: 'warning',
+        payload: { taskId, videoId: video.id, reason: 'E - Frame Link field empty' },
+      });
+      return;
+    }
+
+    const assetId = frameio.extractAssetIdFromUrl(url);
+
+    if (video.frameio_link === url && video.frameio_asset_id === assetId) {
+      await log({
+        campusId: campus.id,
+        agent: AGENT_NAME,
+        action: 'frameio_link_unchanged',
+        payload: { taskId, videoId: video.id, hasAssetId: !!assetId },
+      });
+      return;
+    }
+
+    const { error: uErr } = await supabase
+      .from('videos')
+      .update({
+        frameio_link: url,
+        frameio_asset_id: assetId,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', video.id);
+    if (uErr) throw new Error(`Supabase update failed (videos.frameio_link): ${uErr.message}`);
+
+    await log({
+      campusId: campus.id,
+      agent: AGENT_NAME,
+      action: assetId ? 'frameio_link_synced' : 'frameio_link_opaque',
+      status: assetId ? 'success' : 'warning',
+      payload: {
+        taskId,
+        videoId: video.id,
+        url,
+        assetId,
+        reason: assetId ? undefined : 'asset UUID not extractable (likely f.io or /presentations/)',
+      },
+    });
+  } catch (err) {
+    await log({
+      campusId,
+      agent: AGENT_NAME,
+      action: 'frameio_link_sync_error',
+      status: 'error',
+      errorMessage: err.message,
+      payload: { taskId },
+    });
+  }
+}
+
+/**
  * Frame.io comment.created webhook arrived — a reviewer left notes.
  * Move the task to `waiting` so the editor knows to revise.
  *
@@ -488,5 +568,6 @@ module.exports = {
   createDropboxFolders,
   assignEditor,
   triggerQA,
+  syncFrameioLink,
   createShareLink,
 };
