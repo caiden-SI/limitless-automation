@@ -12,6 +12,7 @@
 const { supabase } = require('../lib/supabase');
 const { askJson, ask } = require('../lib/claude');
 const { log } = require('../lib/logger');
+const selfHeal = require('../lib/self-heal');
 const { scrapeTikTok, scrapeInstagram } = require('../tools/scraper');
 
 const AGENT_NAME = 'research';
@@ -169,15 +170,9 @@ async function run(campusId, options = {}) {
 
     return stats;
   } catch (err) {
-    await log({
-      campusId,
-      agent: AGENT_NAME,
-      action: 'research_run_error',
-      status: 'error',
-      errorMessage: err.message,
-      payload: { stack: err.stack },
-    });
-    throw err;
+    // Cron-invoked; swallow after self-heal so runAll continues to next campus.
+    await selfHeal.handle(err, { agent: AGENT_NAME, action: 'run', campusId });
+    return stats;
   }
 }
 

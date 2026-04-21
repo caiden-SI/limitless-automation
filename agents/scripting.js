@@ -10,6 +10,7 @@ const path = require('path');
 const { supabase } = require('../lib/supabase');
 const { askJson } = require('../lib/claude');
 const { log } = require('../lib/logger');
+const selfHeal = require('../lib/self-heal');
 const clickup = require('../lib/clickup');
 const gcal = require('../lib/gcal');
 const { HOOK_TYPES } = require('./research');
@@ -138,13 +139,14 @@ async function processEvent(event, campusId) {
 
     return result;
   } catch (err) {
-    await log({
-      campusId,
+    // Self-heal runs first (it logs the original error per CLAUDE.md rule 1).
+    // The rethrow at the bottom is still caught by runForCampus, which swallows
+    // per-event errors so one bad event doesn't stall the run.
+    await selfHeal.handle(err, {
       agent: AGENT_NAME,
-      action: 'process_event_error',
-      status: 'error',
-      errorMessage: err.message,
-      payload: { eventId: event?.id, title: event?.title, stack: err.stack },
+      action: 'processEvent',
+      campusId,
+      payload: { eventId: event?.id, title: event?.title },
     });
 
     // Pre-write failure (context load, Claude, validation): no external side effects

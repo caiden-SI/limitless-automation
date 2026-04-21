@@ -10,6 +10,7 @@
 
 const { supabase } = require('../lib/supabase');
 const { log } = require('../lib/logger');
+const selfHeal = require('../lib/self-heal');
 const dropbox = require('../lib/dropbox');
 const clickup = require('../lib/clickup');
 const frameio = require('../lib/frameio');
@@ -52,13 +53,14 @@ async function handleStatusChange(taskId, newStatus, campusId) {
         break;
     }
   } catch (err) {
-    await log({
-      campusId,
+    // Self-heal logs + diagnoses + may recover. We keep the rethrow so
+    // handlers/clickup.js can still mark webhook_inbox failed for replay.
+    await selfHeal.handle(err, {
       agent: AGENT_NAME,
-      action: `status_change_error: ${newStatus}`,
-      status: 'error',
-      errorMessage: err.message,
-      payload: { taskId, stack: err.stack },
+      action: 'handleStatusChange',
+      taskId,
+      campusId,
+      payload: { newStatus },
     });
     throw err;
   }
@@ -310,7 +312,7 @@ async function triggerQA(taskId, campusId) {
       campusId: campus.id,
       agent: AGENT_NAME,
       action: 'qa_gate_blocked',
-      payload: { taskId, videoId: video.id, issueCount: report.totalIssues },
+      payload: { taskId, videoId: video.id, issueCount: report?.totalIssues ?? 0 },
     });
   }
 

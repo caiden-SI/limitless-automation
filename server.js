@@ -5,6 +5,7 @@ require('dotenv').config();
 
 const express = require('express');
 const { log } = require('./lib/logger');
+const selfHeal = require('./lib/self-heal');
 const clickupHandler = require('./handlers/clickup');
 const dropboxHandler = require('./handlers/dropbox');
 const frameioHandler = require('./handlers/frameio');
@@ -143,12 +144,11 @@ app.get('/onboarding/student', async (req, res) => {
 
 // Global error handler — catch unhandled route errors
 app.use((err, _req, res, _next) => {
-  log({
+  // Fire self-heal asynchronously; the 500 response does not wait on it.
+  selfHeal.handle(err, {
     agent: 'server',
     action: 'unhandled_route_error',
-    status: 'error',
-    errorMessage: err.message,
-    payload: { stack: err.stack },
+    payload: { route: _req.originalUrl, method: _req.method },
   });
   res.status(500).json({ error: 'Internal server error' });
 });
@@ -177,13 +177,8 @@ app.listen(PORT, () => {
   scheduler.register('scripting-agent', '*/15 * * * *', scripting.runAll);
 });
 
-// Catch unhandled promise rejections — log before PM2 restarts
+// Catch unhandled promise rejections — hand to self-heal before PM2 restarts
 process.on('unhandledRejection', (reason) => {
-  log({
-    agent: 'server',
-    action: 'unhandled_rejection',
-    status: 'error',
-    errorMessage: reason instanceof Error ? reason.message : String(reason),
-    payload: { stack: reason instanceof Error ? reason.stack : null },
-  });
+  const err = reason instanceof Error ? reason : new Error(String(reason));
+  selfHeal.handle(err, { agent: 'server', action: 'unhandled_rejection' });
 });

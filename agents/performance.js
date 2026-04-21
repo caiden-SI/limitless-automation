@@ -14,6 +14,7 @@
 const { supabase } = require('../lib/supabase');
 const { askJson } = require('../lib/claude');
 const { log } = require('../lib/logger');
+const selfHeal = require('../lib/self-heal');
 
 const AGENT_NAME = 'performance';
 
@@ -155,15 +156,10 @@ async function run(campusId) {
 
     return { signalId: signal.id, summary: signal.summary };
   } catch (err) {
-    await log({
-      campusId,
-      agent: AGENT_NAME,
-      action: 'performance_run_error',
-      status: 'error',
-      errorMessage: err.message,
-      payload: { stack: err.stack },
-    });
-    throw err;
+    // Cron-invoked; swallow after self-heal so runAll continues to next campus.
+    // self-heal logs the original error itself (step 1 of the contract).
+    await selfHeal.handle(err, { agent: AGENT_NAME, action: 'run', campusId });
+    return null;
   }
 }
 

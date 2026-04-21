@@ -14,6 +14,7 @@ const { execFile } = require('child_process');
 const { supabase } = require('../lib/supabase');
 const { askJson } = require('../lib/claude');
 const { log } = require('../lib/logger');
+const selfHeal = require('../lib/self-heal');
 const dropbox = require('../lib/dropbox');
 const clickup = require('../lib/clickup');
 const { parseSRT, cuesToPlainText } = require('../tools/srt-parser');
@@ -95,15 +96,16 @@ async function runQA(videoId, campusId) {
 
     return { passed, report };
   } catch (err) {
-    await log({
-      campusId,
+    // Self-heal logs + diagnoses + may recover (e.g. mark_waiting).
+    // QA is called from pipeline.triggerQA; swallowing here prevents a
+    // double-path through pipeline's own outer catch.
+    await selfHeal.handle(err, {
       agent: AGENT_NAME,
-      action: 'qa_error',
-      status: 'error',
-      errorMessage: err.message,
-      payload: { videoId, stack: err.stack },
+      action: 'runQA',
+      videoId,
+      campusId,
     });
-    throw err;
+    return { passed: false, report: null };
   }
 }
 
