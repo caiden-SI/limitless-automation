@@ -1286,3 +1286,124 @@ For opaque URLs (`f.io/*`, `/presentations/*`): raw URL still stored in `videos.
 4. **`failed_cleanup` release script.** Small operator tool to list `processed_calendar_events` rows with `status='failed_cleanup'` and release them after manual review.
 5. **Verify self-heal end-to-end with a forced failure.** Session 9 follow-up; partially validated this session through the real Dropbox auth expiry, but a forced pipeline error (e.g., temporarily clear `CLICKUP_FRAMEIO_FIELD_ID`) would exercise the full ClickUp-comment escalation path.
 6. **Optional: Frame.io v2 presentation/share resolver.** Only if opaque URLs become the common editor pattern in practice. Not worth building until there's evidence.
+
+---
+
+## Session 12 — April 21, 2026
+
+Closed the 1-hour Dropbox stabilization delay — the last open gap from Session 8. Editors no longer get assigned before the team's Dropbox desktop sync has time to propagate a batch upload.
+
+### Built — `scanPendingFootage` state machine
+
+Moved the whole Dropbox-change scan loop out of `handlers/dropbox.js` and into `agents/pipeline.js`. The handler is now a thin router; the real logic lives next to the rest of the pipeline agent and is exported for the cron.
+
+**`agents/pipeline.js`** — two new exports:
+
+- **`scanPendingFootage(campusId?)`** — scans `status = READY FOR SHOOTING AND dropbox_folder IS NOT NULL` and runs the following per-video state machine on `videos.footage_detected_at`:
+
+  | Files in `[FOOTAGE]` | `footage_detected_at` | Action |
+  |---|---|---|
+  | absent | null | skip (no-op) |
+  | absent | set | **clear** — files vanished within the window, reset the 1-hour clock |
+  | present | null | **stamp** with `now()`, log `footage_detected_pending_delay`, stay in READY FOR SHOOTING |
+  | present | <1hr old | wait |
+  | present | ≥1hr old | **advance** via `handleFootageDetected`, then clear the timestamp |
+
+  The timestamp is cleared on advance so a rare cycle back to READY FOR SHOOTING doesn't short-circuit the next delay window with a stale value. Per-video errors are logged and swallowed so one bad Dropbox call doesn't block the rest of the scan. Scan-level errors propagate and mark the `webhook_inbox` row failed.
+
+  Returns counters: `{ candidates, detected, advanced, cleared, waiting, skipped }`.
+
+- **`scanPendingFootageAll()`** — iterates active campuses and calls `scanPendingFootage(campusId)` for each. Per-campus errors logged and swallowed.
+
+**`FOOTAGE_DELAY_MS = 60 * 60 * 1000`** — hard-coded per the CLAUDE.md rule. No env knob; tune inline if Scott asks.
+
+### Handler refactor
+
+**`handlers/dropbox.js`** lost ~70 lines of scan logic. What remains:
+
+1. Signature verification (unchanged)
+2. Durable `webhook_inbox` insert (unchanged)
+3. 200 ack (unchanged)
+4. Async: log `dropbox_webhook_received`, call `pipeline.scanPendingFootage()`, log `dropbox_scan_complete` with counts
+
+The Session 8 TODO comment explaining the missing delay was deleted — the header now documents the new delegation pattern.
+
+### Cron wired
+
+**`server.js`** — registered a fifth cron alongside research, performance, and scripting:
+
+```js
+scheduler.register('footage-scan', '*/15 * * * *', pipeline.scanPendingFootageAll);
+```
+
+The cron catches videos whose 1-hour window elapses without a follow-up Dropbox webhook firing. Dropbox webhooks aren't reliable for quiescent folders — if the last file upload happens at T+0 and no one touches that Dropbox account for hours afterward, no second webhook fires. The cron guarantees the advance happens within 15 minutes of the window closing.
+
+### Migration
+
+**`scripts/migrations/2026-04-21-footage-detected-at.sql`** (applied):
+
+```sql
+ALTER TABLE videos ADD COLUMN IF NOT EXISTS footage_detected_at timestamptz;
+CREATE INDEX IF NOT EXISTS videos_footage_detected_at
+  ON videos (footage_detected_at) WHERE footage_detected_at IS NOT NULL;
+```
+
+Partial index sized for operator queries like "show me every pending detection" — the hot path (the scan itself) is bounded by `status = READY FOR SHOOTING AND dropbox_folder IS NOT NULL`, which is already a narrow slice on a small table.
+
+### Integration test — 5/5 passing
+
+**`scripts/test-footage-delay.js`** creates one test video, stubs `dropbox.listFolder` + `clickup.updateTask`, and walks the video through every branch:
+
+| Case | Setup | Assertion |
+|---|---|---|
+| 1 | empty folder, no timestamp | `skipped` ≥1, both columns unchanged |
+| 2 | files present, no timestamp | `detected` ≥1, `footage_detected_at ≈ now` (±10s), status unchanged |
+| 3 | files present, timestamp 30min old (backdated) | `waiting` ≥1, status unchanged |
+| 4 | files present, timestamp 2hr old (backdated) | `advanced` ≥1, status = READY FOR EDITING, timestamp cleared |
+| 5 | files removed, timestamp 15min old | `cleared` ≥1, timestamp back to null |
+
+Counts are asserted as `>=` to tolerate stray fixtures in the DB; the authoritative per-case assertion is the specific test video's state read back from Supabase. Stub returns `[]` for non-test paths so unrelated READY FOR SHOOTING videos don't accidentally trigger.
+
+### E2E regression — 7/7 still passing
+
+Stage 3 of the E2E test calls `handleFootageDetected` directly, bypassing the new delay. That's correct — the E2E exercises the advance primitive, not the gate. The gate has its own dedicated test above. Full 7-stage run ~90s, clean teardown.
+
+### Files changed
+
+- `agents/pipeline.js` (+180) — `scanPendingFootage`, `scanPendingFootageAll`, `FOOTAGE_DELAY_MS`, timestamp-clear-on-advance
+- `handlers/dropbox.js` (−79 / +11 net) — delegates to pipeline; dropped `lib/dropbox` import
+- `server.js` (+4) — `footage-scan` cron + `pipeline` import
+- `scripts/migrations/2026-04-21-footage-detected-at.sql` (new) — column + partial index
+- `scripts/test-footage-delay.js` (new) — 5-case integration test
+
+### Agent + test status
+
+| Component | Status | Notes |
+|---|---|---|
+| Pipeline | 4 triggers + 1-hour footage delay + `edited` Frame.io sync | No webhook-invoked path advances status early |
+| QA | Live | No changes |
+| Research | Built — needs APIFY_API_TOKEN | No changes |
+| Performance | Built | No changes |
+| Onboarding | Built — live tested | No changes |
+| Scripting | Built — integration test passing | No changes |
+| Dashboard | Live | No changes |
+| Self-heal | Built — 6/6 test cases | No changes |
+| **Dropbox footage delay** | **Built — 5/5 test cases passing; E2E regression clean** | Webhook + cron both exercise the scan |
+| E2E pipeline test | 7/7 passing | No changes needed |
+
+### Crons registered (as of this session)
+
+| Name | Schedule | Function |
+|---|---|---|
+| `research-agent` | `0 6 * * *` | `research.runAll` |
+| `performance-agent` | `0 7 * * 1` | `performance.runAll` |
+| `scripting-agent` | `*/15 * * * *` | `scripting.runAll` |
+| **`footage-scan`** | **`*/15 * * * *`** | **`pipeline.scanPendingFootageAll`** |
+
+### What's Next
+
+1. **Populate `campuses.google_calendar_id` for Austin.** Scott-owned. Until it lands, scripting cron logs a skip for Austin every 15 minutes.
+2. **Brand voice examples.** Obtain reference scripts from Scott, set `BRAND_VOICE_EXAMPLES_PATH`.
+3. **`failed_cleanup` release script.** Small operator tool for `processed_calendar_events` rows stuck in `failed_cleanup`.
+4. **Verify self-heal end-to-end with a forced failure.** Session 9 follow-up; partially validated last session through the real Dropbox auth expiry. Forcing a fresh pipeline error (e.g., temporarily clear `CLICKUP_FRAMEIO_FIELD_ID`) would exercise the full ClickUp-comment escalation path.
+5. **Optional: Frame.io v2 presentation/share resolver.** Only if opaque "E - Frame Link" URLs become the common editor pattern in practice.
