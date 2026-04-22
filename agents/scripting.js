@@ -1,11 +1,9 @@
 // Scripting Agent — generates 3 concept scripts per filming event.
 // Spec: workflows/scripting-agent.md
+// Voice validation: workflows/brand-voice-validation.md
 //
 // Trigger: cron every 15 minutes, looks 48 hours ahead on each campus's
 // configured Google Calendar. Dedup via processed_calendar_events.
-
-const fs = require('fs');
-const path = require('path');
 
 const { supabase } = require('../lib/supabase');
 const { askJson } = require('../lib/claude');
@@ -13,10 +11,18 @@ const { log } = require('../lib/logger');
 const selfHeal = require('../lib/self-heal');
 const clickup = require('../lib/clickup');
 const gcal = require('../lib/gcal');
+const validator = require('../lib/brand-voice-validator');
 const { HOOK_TYPES } = require('./research');
 
 const AGENT_NAME = 'scripting';
 const WINDOW_HOURS = 48;
+
+// After this many consecutive voice-validation aborts for the same event_id
+// (counted via agent_logs in the trailing 7 days), escalate the claim to
+// failed_cleanup so automatic retries stop and an operator is forced to look.
+// Spec: workflows/brand-voice-validation.md line 178.
+const VOICE_ABORT_ESCALATION_THRESHOLD = 3;
+const VOICE_ABORT_LOOKBACK_DAYS = 7;
 
 // Mirror of pipeline.js dbStatus — one-liner, not worth a circular import.
 const dbStatus = (s) => s.toUpperCase();
@@ -108,8 +114,15 @@ async function processEvent(event, campusId) {
     claimId = claim.id;
     await log({ campusId, agent: AGENT_NAME, action: 'event_claimed', payload: { eventId: event.id, claimId } });
 
-    // 5. Load context
+    // 5. Load context + voice-validation shared context.
+    //    Both validator and generator consume buildGenerationConstraints so
+    //    the concept prompt and the post-gen gate share one rule set.
     const context = await loadContext({ campusId, student });
+    const validatorContext = await validator.loadSharedContext(student, campusId);
+    const genConstraints = await validator.buildGenerationConstraints(student, {
+      campusId,
+      sharedContext: validatorContext,
+    });
     await log({
       campusId,
       agent: AGENT_NAME,
@@ -118,17 +131,45 @@ async function processEvent(event, campusId) {
         hasStudentContext: !!student.claude_project_context,
         hasPerformanceSignals: !!context.performanceSignals,
         researchBenchmarkCount: context.researchBenchmarks.length,
-        hasBrandVoiceExamples: !!context.brandVoiceExamples,
+        toneDimensionCount: validatorContext.toneDimensions.length,
+        voiceExcerptCount: validatorContext.excerpts.length,
       },
     });
 
-    // 6. Claude call — with one validation retry
-    const concepts = await generateConcepts({ campusId, student, context });
+    // 6. Claude call — with shared structural + voice 2-attempt budget.
+    const genResult = await generateConcepts({
+      campusId,
+      student,
+      context,
+      validatorContext,
+      genConstraints,
+    });
 
+    // 6a. Voice-validation abort in gate mode.
+    if (genResult.aborted) {
+      return await handleVoiceAbort({
+        campusId,
+        event,
+        claimId,
+        issues: genResult.issues,
+        attempts: genResult.attempts,
+      });
+    }
+
+    const { concepts, validatorResults } = genResult;
     await log({ campusId, agent: AGENT_NAME, action: 'validation_passed', payload: { eventId: event.id } });
 
     // 7. Writes with rollback (rollback is claim-aware and marks failed_cleanup on partial failure)
-    const result = await writeConcepts({ campus, student, event, concepts, claimId });
+    const result = await writeConcepts({ campus, student, event, concepts, claimId, validatorResults });
+
+    // 7a. log_only mode: if any concept had voice issues, post ONE ClickUp
+    //     comment on the first inserted video's task summarizing them.
+    //     Single comment per event, not per concept.
+    await postLogOnlyCommentIfNeeded({
+      campusId: campus.id,
+      validatorResults,
+      clickupTaskIds: result.clickupTaskIds,
+    });
 
     await log({
       campusId,
@@ -192,8 +233,9 @@ async function processEvent(event, campusId) {
 }
 
 /**
- * Parallel fetch of performance signals, research benchmarks, and the
- * optional brand voice examples file.
+ * Parallel fetch of performance signals + research benchmarks.
+ * Voice-related context (tone dimensions, excerpts, brand dictionary,
+ * allowed proper nouns) comes from brand-voice-validator.loadSharedContext.
  */
 async function loadContext({ campusId, student }) {
   const [signalRes, researchRes] = await Promise.all([
@@ -215,35 +257,23 @@ async function loadContext({ campusId, student }) {
   if (signalRes.error) throw new Error(`Supabase query failed (performance_signals): ${signalRes.error.message}`);
   if (researchRes.error) throw new Error(`Supabase query failed (research_library): ${researchRes.error.message}`);
 
-  let brandVoiceExamples = null;
-  const voicePath = process.env.BRAND_VOICE_EXAMPLES_PATH;
-  if (voicePath) {
-    try {
-      const resolved = path.isAbsolute(voicePath) ? voicePath : path.resolve(process.cwd(), voicePath);
-      if (fs.existsSync(resolved)) {
-        brandVoiceExamples = fs.readFileSync(resolved, 'utf8');
-      } else {
-        await log({ campusId, agent: AGENT_NAME, action: 'brand_voice_file_missing', status: 'warning', payload: { path: resolved } });
-      }
-    } catch (err) {
-      await log({ campusId, agent: AGENT_NAME, action: 'brand_voice_read_error', status: 'warning', errorMessage: err.message });
-    }
-  }
-
   return {
     studentContext: student.claude_project_context || null,
     performanceSignals: signalRes.data || null,
     researchBenchmarks: researchRes.data || [],
-    brandVoiceExamples,
   };
 }
 
 /**
  * Build the system + user prompt. Optional `validationError` appends a retry
- * instruction when Claude's first attempt failed validation.
+ * instruction when Claude's first attempt failed structural or voice validation.
+ * `genConstraints` is the output of validator.buildGenerationConstraints —
+ * the hard constraints + soft guidelines that mirror the validator's rules.
  */
-function buildPrompt({ student, context, validationError }) {
-  const { studentContext, performanceSignals, researchBenchmarks, brandVoiceExamples } = context;
+function buildPrompt({ student, context, genConstraints, validationError }) {
+  const { studentContext, performanceSignals, researchBenchmarks } = context;
+  const hc = genConstraints?.hardConstraints;
+  const sg = genConstraints?.softGuidelines;
 
   const sysParts = [
     `You are a content strategist for Alpha School, a private K-12 school network.`,
@@ -259,8 +289,56 @@ function buildPrompt({ student, context, validationError }) {
     `Match the student's brand voice exactly. Keep language natural for a high school student.`,
   ];
 
-  if (brandVoiceExamples) {
-    sysParts.push('', 'BRAND_VOICE_EXAMPLES (infer tone from these, do not copy):', brandVoiceExamples.slice(0, 4000));
+  // HARD CONSTRAINTS — deterministic, imperative. Mirror Layer 1 rules.
+  if (hc) {
+    const lines = ['', 'HARD CONSTRAINTS (non-negotiable — any violation fails validation):'];
+    if (Array.isArray(hc.ai_tell_blocklist) && hc.ai_tell_blocklist.length) {
+      lines.push(
+        `- Your output MUST NOT contain any of these phrases (case-insensitive): ${hc.ai_tell_blocklist.map((p) => `"${p}"`).join(', ')}.`
+      );
+    }
+    if (hc.length_bounds && hc.length_bounds.unit === 'words') {
+      lines.push(`- Script length MUST be between ${hc.length_bounds.min} and ${hc.length_bounds.max} ${hc.length_bounds.unit}.`);
+    } else if (hc.length_bounds && hc.length_bounds.unit === 'segments') {
+      lines.push(
+        `- On-screen text: MUST have ${hc.length_bounds.minSegments}-${hc.length_bounds.maxSegments} segments, each ≤ ${hc.length_bounds.maxWordsPerSegment} words.`
+      );
+    }
+    if (Array.isArray(hc.brand_dictionary) && hc.brand_dictionary.length) {
+      lines.push(
+        `- Brand terms MUST be spelled exactly as listed (case-sensitive): ${hc.brand_dictionary.map((t) => t.term).join(', ')}.`
+      );
+    }
+    if (Array.isArray(hc.forbidden_generic_openers) && hc.forbidden_generic_openers.length) {
+      lines.push(
+        `- Script MUST NOT open with any of: ${hc.forbidden_generic_openers.map((o) => `"${o}"`).join(', ')}.`
+      );
+    }
+    lines.push(`- Last sentence MUST NOT be only a CTA ("Follow for more", "Like and subscribe"). Payoff first.`);
+    if (Array.isArray(hc.allowed_proper_nouns) && hc.allowed_proper_nouns.length) {
+      lines.push(
+        `- Only these proper nouns are allowed to appear in the concept: ${hc.allowed_proper_nouns.slice(0, 40).join(', ')}. Do not invent names, schools, projects, or handles.`
+      );
+    }
+    sysParts.push(...lines);
+  }
+
+  // SOFT GUIDELINES — probabilistic, example-driven. Mirror Layer 2 context.
+  if (sg) {
+    const lines = ['', 'VOICE GUIDELINES (use as context, not hard rules):'];
+    if (Array.isArray(sg.tone_dimensions) && sg.tone_dimensions.length) {
+      lines.push(`- The student's voice tends to be: ${sg.tone_dimensions.join(', ')}.`);
+    }
+    if (Array.isArray(sg.voice_excerpts) && sg.voice_excerpts.length) {
+      lines.push(`- Excerpts from creators whose voice the student has said they want to match:`);
+      for (const e of sg.voice_excerpts) {
+        lines.push(`    [${e.source}] "${String(e.text).slice(0, 240)}"`);
+      }
+    }
+    if (sg.format_hook_shape) {
+      lines.push(`- For ${sg.format} format: ${sg.format_hook_shape}.`);
+    }
+    sysParts.push(...lines);
   }
 
   const userParts = [];
@@ -326,19 +404,27 @@ function buildPrompt({ student, context, validationError }) {
 }
 
 /**
- * Call Claude, validate, retry once on validation failure, abort on second.
+ * Call Claude, validate structurally and against the brand-voice rule set,
+ * retry once on any failure, abort on second. Shared 2-attempt budget —
+ * whether the first attempt failed structural validation OR voice gating,
+ * we get exactly one regeneration before giving up.
+ *
+ * Returns on success: `{ concepts, validatorResults }`.
+ * Returns on voice-abort in gate mode: `{ aborted: true, issues, attempts }` (no throw).
+ * Throws on structural / Claude-parse / validator-crash failures (existing contract
+ * — outer processEvent catch releases the claim via self-heal).
  */
-async function generateConcepts({ campusId, student, context }) {
+async function generateConcepts({ campusId, student, context, validatorContext, genConstraints }) {
   let lastError = null;
+  const attemptIssues = [];
 
   for (let attempt = 1; attempt <= 2; attempt++) {
-    const { system, prompt } = buildPrompt({ student, context, validationError: lastError });
+    const { system, prompt } = buildPrompt({ student, context, genConstraints, validationError: lastError });
 
     let raw;
     try {
       raw = await askJson({ system, prompt, maxTokens: 3000 });
     } catch (err) {
-      // Parse failure counts as a validation failure for retry purposes
       lastError = err.message;
       if (attempt === 2) throw new Error(`Claude failed to return valid JSON after retry: ${err.message}`);
       await log({ campusId, agent: AGENT_NAME, action: 'claude_parse_failed_retrying', status: 'warning', errorMessage: err.message });
@@ -347,12 +433,58 @@ async function generateConcepts({ campusId, student, context }) {
 
     try {
       validateConcepts(raw);
-      return raw;
     } catch (err) {
       lastError = err.message;
       if (attempt === 2) throw new Error(`Concept validation failed after retry: ${err.message}`);
       await log({ campusId, agent: AGENT_NAME, action: 'validation_failed_retrying', status: 'warning', errorMessage: err.message });
+      continue;
     }
+
+    // Brand-voice validation. log_only always returns overall_passed=true;
+    // only `gate` mode can cause an abort here.
+    const validatorResults = await validator.validateConcepts(raw, student, {
+      campusId,
+      sharedContext: validatorContext,
+    });
+
+    const mode = validatorResults[0]?.mode || 'log_only';
+    const anyFailed = validatorResults.some((r) => !r.overall_passed);
+
+    if (!anyFailed || mode === 'log_only' || mode === 'off') {
+      return { concepts: raw, validatorResults };
+    }
+
+    // Gate-mode voice failure.
+    const issuesForAttempt = validatorResults.flatMap((r, idx) => {
+      const out = [];
+      if (Array.isArray(r.layer1_issues)) {
+        for (const issue of r.layer1_issues) {
+          out.push({ concept: idx + 1, layer: 1, ...issue });
+        }
+      }
+      if (r.layer2_passed === false) {
+        out.push({ concept: idx + 1, layer: 2, rule: 'voice_fit', detail: r.layer2_notes || 'layer 2 scores below threshold' });
+      }
+      return out;
+    });
+    attemptIssues.push({ attempt, issues: issuesForAttempt });
+
+    if (attempt === 2) {
+      // Second failure — structured return, NOT an exception. processEvent
+      // handles count-and-escalate.
+      return { aborted: true, issues: attemptIssues, attempts: 2 };
+    }
+
+    // First failure — build a retry prompt containing the exact voice issues
+    // so Claude can correct on attempt 2.
+    lastError = `Brand voice validation failed. Issues: ${JSON.stringify(issuesForAttempt).slice(0, 1500)}`;
+    await log({
+      campusId,
+      agent: AGENT_NAME,
+      action: 'voice_validation_failed_retrying',
+      status: 'warning',
+      payload: { issueCount: issuesForAttempt.length, firstIssue: issuesForAttempt[0] },
+    });
   }
 }
 
@@ -402,13 +534,185 @@ function validateConcepts(raw) {
 }
 
 /**
+ * Count prior voice-abort rows for this event_id in the trailing window and
+ * decide whether this attempt should escalate the claim to failed_cleanup.
+ * Spec: workflows/brand-voice-validation.md line 178.
+ *
+ * Called after generateConcepts returns `{ aborted }`. No throw.
+ */
+async function handleVoiceAbort({ campusId, event, claimId, issues, attempts }) {
+  // 1. Log the abort FIRST so the count includes this attempt. The count
+  //    query filters by action + payload->>eventId + recency.
+  const abortLog = {
+    campusId,
+    agent: AGENT_NAME,
+    action: 'brand_voice_validate_abort',
+    status: 'error',
+    errorMessage: `Voice validation failed after ${attempts} attempt(s); aborting event`,
+    payload: {
+      eventId: event.id,
+      title: event.title,
+      attempts,
+      issues,
+    },
+  };
+  await log(abortLog);
+
+  // 2. Count prior aborts for this event (includes the row we just wrote).
+  const since = new Date(Date.now() - VOICE_ABORT_LOOKBACK_DAYS * 24 * 60 * 60 * 1000).toISOString();
+  const { data: priorAborts, error: countErr } = await supabase
+    .from('agent_logs')
+    .select('id')
+    .eq('agent_name', AGENT_NAME)
+    .eq('action', 'brand_voice_validate_abort')
+    .eq('payload->>eventId', event.id)
+    .gte('created_at', since);
+
+  const abortCount = countErr ? 1 : (priorAborts || []).length;
+
+  if (countErr) {
+    await log({
+      campusId,
+      agent: AGENT_NAME,
+      action: 'voice_abort_count_query_failed',
+      status: 'warning',
+      errorMessage: countErr.message,
+      payload: { eventId: event.id },
+    });
+  }
+
+  const shouldEscalate = abortCount >= VOICE_ABORT_ESCALATION_THRESHOLD;
+
+  if (shouldEscalate) {
+    // Transition the pending claim to failed_cleanup with aggregated error_payload.
+    const aggregated = {
+      reason: 'brand_voice_validate_repeated_abort',
+      lookbackDays: VOICE_ABORT_LOOKBACK_DAYS,
+      abortCount,
+      latestAttempts: issues,
+    };
+    const { error: upErr } = await supabase
+      .from('processed_calendar_events')
+      .update({ status: 'failed_cleanup', error_payload: aggregated })
+      .eq('id', claimId);
+    if (upErr) {
+      await log({
+        campusId,
+        agent: AGENT_NAME,
+        action: 'voice_abort_escalation_failed',
+        status: 'error',
+        errorMessage: upErr.message,
+        payload: { claimId, eventId: event.id },
+      });
+    } else {
+      await log({
+        campusId,
+        agent: AGENT_NAME,
+        action: 'brand_voice_escalated_to_failed_cleanup',
+        status: 'error',
+        payload: { claimId, eventId: event.id, abortCount },
+      });
+    }
+    return { aborted: true, escalated: true, abortCount };
+  }
+
+  // Not yet at the threshold — delete the claim so the next cron tick can retry.
+  const { error: delErr } = await supabase.from('processed_calendar_events').delete().eq('id', claimId);
+  if (delErr) {
+    // Fall back to marking failed_cleanup so the event doesn't silently block forever.
+    await supabase
+      .from('processed_calendar_events')
+      .update({ status: 'failed_cleanup', error_payload: { cause: 'claim_release_after_voice_abort', release_error: delErr.message } })
+      .eq('id', claimId);
+    await log({
+      campusId,
+      agent: AGENT_NAME,
+      action: 'voice_abort_claim_release_failed',
+      status: 'error',
+      errorMessage: delErr.message,
+      payload: { claimId, eventId: event.id },
+    });
+    return { aborted: true, escalated: true, abortCount };
+  }
+
+  await log({
+    campusId,
+    agent: AGENT_NAME,
+    action: 'voice_abort_claim_released',
+    payload: { claimId, eventId: event.id, abortCount, threshold: VOICE_ABORT_ESCALATION_THRESHOLD },
+  });
+  return { aborted: true, escalated: false, abortCount };
+}
+
+/**
+ * If the batch ran under mode=log_only and any concept had voice issues,
+ * post ONE ClickUp comment summarizing them on the first inserted video's
+ * task. Single comment per event, not per concept. No-op for gate/off.
+ * Spec: workflows/brand-voice-validation.md line 179.
+ */
+async function postLogOnlyCommentIfNeeded({ campusId, validatorResults, clickupTaskIds }) {
+  if (!Array.isArray(validatorResults) || !validatorResults.length) return;
+  const mode = validatorResults[0]?.mode;
+  if (mode !== 'log_only') return;
+
+  const failures = validatorResults
+    .map((r, i) => ({ idx: i + 1, r }))
+    .filter(({ r }) => !r.layer1_passed || r.layer2_passed === false);
+  if (!failures.length) return;
+
+  if (!clickupTaskIds || !clickupTaskIds.length) return;
+  const taskId = clickupTaskIds[0];
+
+  const lines = [
+    `Brand-voice validator flagged ${failures.length}/${validatorResults.length} concepts on this event (mode: log_only — not blocking).`,
+    '',
+  ];
+  for (const { idx, r } of failures) {
+    lines.push(`Concept ${idx}:`);
+    if (!r.layer1_passed) {
+      const gating = (r.layer1_issues || []).filter((i) => i.severity === 'error');
+      for (const issue of gating) lines.push(`  - [L1 ${issue.rule}] ${issue.detail}`);
+    }
+    if (r.layer2_passed === false) {
+      lines.push(`  - [L2 voice_fit] ${r.layer2_notes || 'scores below threshold'}`);
+    }
+    lines.push('');
+  }
+  lines.push(`(One comment per event, on the first concept's ClickUp task. Full scores in video_quality_scores.)`);
+
+  try {
+    await clickup.addComment(taskId, lines.join('\n'));
+    await log({
+      campusId,
+      agent: AGENT_NAME,
+      action: 'brand_voice_log_only_comment_posted',
+      payload: { taskId, failureCount: failures.length },
+    });
+  } catch (err) {
+    // Non-fatal — log_only must never block the pipeline.
+    await log({
+      campusId,
+      agent: AGENT_NAME,
+      action: 'brand_voice_log_only_comment_failed',
+      status: 'warning',
+      errorMessage: err.message,
+      payload: { taskId },
+    });
+  }
+}
+
+/**
  * Insert 3 videos rows, create 3 ClickUp tasks with custom fields, wire
  * clickup_task_id back onto videos, then transition the existing claim row
  * from "pending" to "completed". On any write failure, roll back and either
  * release the claim (on clean rollback) or mark it failed_cleanup (on
  * partial rollback failure — halts automatic retry).
+ *
+ * Also persists one video_quality_scores row per concept inside the same
+ * try block as the videos insert, so a score-insert failure triggers the
+ * full rollback (orphan scores with broken FKs are worse than a retry).
  */
-async function writeConcepts({ campus, student, event, concepts, claimId }) {
+async function writeConcepts({ campus, student, event, concepts, claimId, validatorResults }) {
   const INTERNAL_FIELD = process.env.CLICKUP_INTERNAL_VIDEO_NAME_FIELD_ID;
   const PROJECT_FIELD = process.env.CLICKUP_PROJECT_DESCRIPTION_FIELD_ID;
   if (!INTERNAL_FIELD || !PROJECT_FIELD) {
@@ -461,6 +765,26 @@ async function writeConcepts({ campus, student, event, concepts, claimId }) {
     for (let i = 0; i < 3; i++) {
       const concept = concepts[i];
       const video = insertedVideos[i];
+
+      // video_quality_scores FK depends on videos.id (which just inserted),
+      // so this is the right stage. Inside the same try — a score failure
+      // triggers the full rollback.
+      if (Array.isArray(validatorResults) && validatorResults[i]) {
+        const vr = validatorResults[i];
+        const { error: vqsErr } = await supabase.from('video_quality_scores').insert({
+          video_id: video.id,
+          campus_id: campus.id,
+          validator_version: vr.validator_version,
+          layer1_passed: !!vr.layer1_passed,
+          layer1_issues: vr.layer1_issues || [],
+          layer2_passed: vr.layer2_passed,
+          layer2_scores: vr.layer2_scores,
+          layer2_notes: vr.layer2_notes,
+          overall_passed: !!vr.overall_passed,
+          mode: vr.mode,
+        });
+        if (vqsErr) throw new Error(`Supabase insert failed (video_quality_scores): ${vqsErr.message}`);
+      }
 
       const task = await clickup.createTask(campus.clickup_list_id, {
         name: concept.title,
@@ -721,4 +1045,10 @@ module.exports = {
   buildPrompt,
   loadContext,
   writeConcepts,
+  generateConcepts,
+  handleVoiceAbort,
+  postLogOnlyCommentIfNeeded,
+  // Constants
+  VOICE_ABORT_ESCALATION_THRESHOLD,
+  VOICE_ABORT_LOOKBACK_DAYS,
 };

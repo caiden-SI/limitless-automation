@@ -77,7 +77,7 @@ The Claude prompt must:
 - Include student brand context verbatim from `claude_project_context`.
 - Include the latest performance signals as a structured summary (top 3 hooks with view averages, top 3 formats, top topics, underperforming patterns).
 - Include the research library benchmarks as a structured list.
-- Include 2 to 3 Scott-approved scripts as `BRAND_VOICE_EXAMPLES` for tone inference. Source file: `wiki/clients/limitless-brand-voice.md` in the brain (see Dependencies). Claude infers voice from examples better than from written description.
+- Voice guidance is injected via `lib/brand-voice-validator.buildGenerationConstraints(student)`, which returns a `{ hardConstraints, softGuidelines }` pair. Inline both in the system prompt as distinct sections. Hard constraints mirror Layer 1 rules (imperatives); soft guidelines mirror Layer 2 context (tone dimensions + excerpts pulled deterministically from the student's own `onboarding_sessions.influencer_transcripts`). See `workflows/brand-voice-validation.md` for the source of truth on the rule set.
 - Require exactly 3 concepts, each targeting a different `hook_type` drawn from `top_hooks` when at least 3 are available. If fewer, allow repetition but note in a validation warning.
 - Return strict JSON only. No prose wrapper, no markdown fences.
 
@@ -149,7 +149,7 @@ Before this agent can run in production:
 - At least one `students` row populated with real `claude_project_context`. Caiden confirmed one exists.
 - `performance_signals` and `research_library` tables can be empty at first run; agent must handle this.
 - Google Calendar events must contain enough info in title or description to match a student name. Format not enforced, agent does fuzzy match and logs unmatched events for tuning.
-- Brand voice examples doc required before production use. File path: `wiki/clients/limitless-brand-voice.md` in the brain repo. Must contain 2 to 3 Scott-approved scripts he considers representative of Alpha tone. Caiden to request from Scott before the agent ships. Without this file, concepts will infer voice from `claude_project_context` alone, which is a quality risk.
+- Brand voice validation is handled by `workflows/brand-voice-validation.md`. The generation prompt is assembled via `buildGenerationConstraints(student)` from `lib/brand-voice-validator`, and the post-generation gate runs via `validateConcepts`. The retired `BRAND_VOICE_EXAMPLES_PATH` single-file approach did not generalize — voice is per-student and some students use captions/on-screen-text only. No Scott-curated reference doc is required; each student's voice signature comes from their own onboarding transcripts + `claude_project_context`.
 
 ## Out of scope for this workflow
 
