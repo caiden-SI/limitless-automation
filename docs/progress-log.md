@@ -1636,3 +1636,61 @@ Three things remain on the historical backlog — all deferrable:
 3. **Optional: Frame.io v2 presentation/share resolver.** Only worth building if opaque `f.io/*` or `/presentations/*` URLs turn out to be the common editor pattern in real traffic.
 
 Everything in the Phase 1 build order from `docs/build-order.md` is now live or deliberately deferred. The stack is ready for real production traffic.
+
+---
+
+## Session 17 — April 21, 2026
+
+Closed the brand-voice-validation follow-up: Onboarding Agent now populates `students.content_format_preference` from a student's own Section 5 answer instead of leaving every student at the DB default of `script`.
+
+### Added — Section 5 `format_preference` question
+
+New question in `agents/onboarding.js` `SECTIONS[4].questions`, positioned between `content_pillars` and `creator_references`:
+
+```
+How do you usually like to record? Pick the closest:
+  A) I read a script on camera (talking head)
+  B) No speaking — text overlays on b-roll, screen recordings, or visuals
+  C) Short captions with minimal or no on-screen text
+  D) A mix of the above
+Reply with the letter or describe what you actually do.
+```
+
+The four options map 1:1 to the brand-voice validator's `content_format_preference` enum values (`script | on_screen_text | caption_only | mixed`). Phrased for a high-school student — no technical vocabulary ("format enum", "content type") and the "describe what you actually do" affordance makes freeform answers valid without forcing an MCQ pick.
+
+### Built — `extractContentFormatPreference(answers)`
+
+Deterministic extractor with a two-pass strategy:
+
+1. **Keyword match first.** Patterns per format (script: "talking head", "voiceover", "narration"; on_screen_text: "text overlay", "b-roll", "no speaking", "silent"; caption_only: "captions", "caption-driven"; mixed: "mix", "depends", "both", "combination"). Two or more distinct hits → `mixed`. One hit → that format.
+2. **Letter fallback.** Only when no keyword hit. Uses a custom boundary `(^|[^\w'])[A-D]($|[^\w'])` that rejects apostrophes (so `"I'd"` doesn't yield a stray `d` hit) and non-word-or-apostrophe chars on both sides (so `"Activities"` doesn't yield `A`, `"Basic"` doesn't yield `B`). `D` always → `mixed`. Two or more non-D letters → `mixed`.
+3. **Default.** Empty / unrecognized answer → `script` (matches the DB default).
+
+**Why keyword-first.** Earlier iteration ran letter matching first and failed on `"A combination of talking head and b-roll"` (letter `A` swallowed the case before keyword matching could find `combination` + `talking head` + `b-roll` → mixed) and `"I do a mix of everything"` (lowercase `a` as English article triggered script). Running keywords first and only falling back to letters when no keywords hit eliminates both cases cleanly.
+
+### Wired into `writeToSupabase`
+
+`agents/onboarding.js` `writeToSupabase` now includes `content_format_preference` in the `students` table update, alongside the existing claude_project_context / onboarding_completed_at / handle fields. The `onboarding_complete` log entry also includes the resolved preference so operators can see what got applied.
+
+### Updated — `scripts/reset-onboarding.js`
+
+Added `content_format_preference: 'script'` to the fields cleared when resetting a test student. Ensures re-runs start from a clean slate rather than preserving a prior session's preference.
+
+### Verified — `scripts/test-onboarding-format-extractor.js`
+
+30 unit cases covering option letters (clean picks, with commentary, multi-letter), keyword matches (each format + mixed), multi-keyword → mixed, false positives (`Activities`, `Basic`, `I'd`), and fallbacks (empty/null/undefined/unrecognized → script). All 30 pass.
+
+### Files changed
+
+- `agents/onboarding.js` (+100 lines: Section 5 question, extractor, writeToSupabase wiring, export)
+- `scripts/reset-onboarding.js` (+2 lines)
+- `scripts/test-onboarding-format-extractor.js` (new, 30-case unit test)
+
+### What's Next
+
+Two items remain on the backlog, both deferrable:
+
+1. **Threshold calibration** for the brand voice validator once `video_quality_scores` has ≥20 rows of real data (current defaults: standard 4/5, loose 3/5).
+2. **Optional: Frame.io v2 presentation/share resolver.** Only worth building if opaque `f.io/*` or `/presentations/*` URLs turn out to be the common editor pattern in real traffic.
+
+Phase 1 is complete. Onboarding now covers every field the brand voice validator reads.

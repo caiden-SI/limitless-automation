@@ -8,6 +8,7 @@
 //     (SELECT id FROM students WHERE name ILIKE '%alex%');
 //   UPDATE students SET onboarding_completed_at = NULL,
 //     claude_project_context = NULL,
+//     content_format_preference = 'script',
 //     handle_tiktok = NULL, handle_instagram = NULL, handle_youtube = NULL
 //     WHERE name ILIKE '%alex%';
 
@@ -49,6 +50,7 @@ async function run() {
       .update({
         onboarding_completed_at: null,
         claude_project_context: null,
+        content_format_preference: 'script',
         handle_tiktok: null,
         handle_instagram: null,
         handle_youtube: null,

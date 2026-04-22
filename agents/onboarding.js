@@ -84,6 +84,7 @@ const SECTIONS = [
     name: 'CONTENT CREATION CONTEXT',
     questions: [
       { key: 'content_pillars', text: 'What types of content would showcase your project best? Pick all that apply: Product demos/tutorials, Behind-the-scenes of building, User testimonials/reactions, My personal story/journey, Educational content in my niche.' },
+      { key: 'format_preference', text: "How do you usually like to record? Pick the closest:\n  A) I read a script on camera (talking head)\n  B) No speaking — text overlays on b-roll, screen recordings, or visuals\n  C) Short captions with minimal or no on-screen text\n  D) A mix of the above\nReply with the letter or describe what you actually do." },
       { key: 'creator_references', text: 'Who are some content creators you like watching? These are just style references — accounts or creator names.' },
       { key: 'topics_to_avoid', text: 'Are there any topics you completely avoid posting about?' },
       { key: 'student_handles', text: 'What are your social handles? Share your TikTok, Instagram, or YouTube @ handles or profile URLs so we can track your content performance.', optional: true },
@@ -377,12 +378,14 @@ On-camera comfort assessment based on their answers, optimal content approach (2
 
 async function writeToSupabase({ studentId, campusId, contextDocument, answers }) {
   const handles = extractStudentHandles(answers);
+  const formatPreference = extractContentFormatPreference(answers);
 
   const { error } = await supabase
     .from('students')
     .update({
       claude_project_context: contextDocument,
       onboarding_completed_at: new Date().toISOString(),
+      content_format_preference: formatPreference,
       ...handles,
     })
     .eq('id', studentId);
@@ -393,7 +396,7 @@ async function writeToSupabase({ studentId, campusId, contextDocument, answers }
     campusId,
     agent: AGENT_NAME,
     action: 'onboarding_complete',
-    payload: { studentId, handles: Object.keys(handles) },
+    payload: { studentId, handles: Object.keys(handles), contentFormatPreference: formatPreference },
   });
 }
 
@@ -433,6 +436,97 @@ const INFLUENCER_HANDLE_KEYS = ['influencers', 'creator_references'];
  *   2. Adjacent:    "my tiktok is @xxx" / "@xxx on tiktok"
  *   3. Bare handle when the platform word appears anywhere in the same answer
  */
+/**
+ * Extract the student's content format preference from Section 5 answer.
+ * Returns one of: 'script' | 'on_screen_text' | 'caption_only' | 'mixed'.
+ *
+ * Priority:
+ *   1. Explicit option letters at word boundaries (A/B/C/D, case-insensitive).
+ *      D (mixed) always resolves to 'mixed'. Two or more distinct non-D
+ *      letters → 'mixed'.
+ *   2. Keyword match across the answer text. Two or more distinct format
+ *      hits → 'mixed'.
+ *   3. Fallback: 'script' (same as the DB default). Safe — the brand voice
+ *      validator's script rules are the strictest, so a mislabeled caption-only
+ *      student would fail Layer 1 loudly rather than silently drift.
+ *
+ * Exported for testing.
+ */
+function extractContentFormatPreference(answers) {
+  const raw = typeof answers?.format_preference === 'string' ? answers.format_preference : '';
+  if (!raw.trim()) return 'script';
+
+  const text = raw.toLowerCase();
+
+  // Step 1: keyword match. Keywords are the strongest signal — if the student
+  // describes their format in words ("I do a mix", "talking head", "captions"),
+  // trust that over any MCQ letter interpretation. Letter matching runs only
+  // as a fallback when no keyword hits, because lone letters ("A combination",
+  // "I'd say A") are too easily confused with English articles and abbreviations.
+  const patterns = {
+    script: [
+      /\bscript(ed|s)?\b/,
+      /\btalking[- ]head\b/,
+      /\bvoice[- ]?over\b/,
+      /\bnarrat(e|ion|or|ing)\b/,
+      /\bspeak(ing)?\s+(on|to)\s+camera\b/,
+    ],
+    on_screen_text: [
+      /\bon[- ]screen\s+text\b/,
+      /\btext\s+overlay(s)?\b/,
+      /\btext\s+on\s+screen\b/,
+      /\bb[- ]?roll\b/,
+      /\bscreen\s+recording(s)?\b/,
+      /\bno\s+(speaking|voice|audio|narration)\b/,
+      /\bsilent\b/,
+    ],
+    caption_only: [
+      /\bcaption[- ]?driven\b/,
+      /\bcaption[- ]?(only|based)\b/,
+      /\bcaptions?\s+(only|just|with\s+minimal)\b/,
+      /\bminimal\s+(text|on[- ]screen)\b/,
+      /\bjust\s+captions?\b/,
+      /\bcaptions?\b/, // broad — any mention of captions qualifies
+    ],
+    mixed: [
+      /\bmix(ed|ture)?\b/,
+      /\bvariety\b/,
+      /\ball\s+of\s+(the\s+)?above\b/,
+      /\bcombin(e|ation|ing)\b/,
+      /\bdepend(s|ing)\b/,
+      /\bboth\b/,
+    ],
+  };
+
+  const matches = new Set();
+  for (const [format, regexes] of Object.entries(patterns)) {
+    if (regexes.some((re) => re.test(text))) matches.add(format);
+  }
+
+  if (matches.has('mixed')) return 'mixed';
+  if (matches.size > 1) return 'mixed';
+  if (matches.size === 1) return [...matches][0];
+
+  // Step 2: letter fallback. No descriptive keywords hit, so the student
+  // probably answered with a bare option letter. Use a custom boundary that
+  // rejects apostrophes (so "I'd" doesn't yield a stray 'd' hit) and both
+  // sides must be non-word-non-apostrophe characters (or string edges).
+  const letterHits = new Set();
+  for (const letter of ['A', 'B', 'C', 'D']) {
+    const re = new RegExp(`(^|[^\\w'])${letter}($|[^\\w'])`, 'i');
+    if (re.test(raw)) letterHits.add(letter.toLowerCase());
+  }
+  if (letterHits.size > 0) {
+    if (letterHits.has('d')) return 'mixed';
+    if (letterHits.size > 1) return 'mixed';
+    if (letterHits.has('a')) return 'script';
+    if (letterHits.has('b')) return 'on_screen_text';
+    if (letterHits.has('c')) return 'caption_only';
+  }
+
+  return 'script';
+}
+
 function extractStudentHandles(answers) {
   const handles = {};
 
@@ -760,4 +854,4 @@ async function handleMessage({ studentId, campusId, studentName, message }) {
   };
 }
 
-module.exports = { handleMessage };
+module.exports = { handleMessage, extractContentFormatPreference, extractStudentHandles };
