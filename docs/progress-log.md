@@ -1573,3 +1573,66 @@ The ultraplan surfaced 13 ambiguities before build started. All resolved inline:
 3. **Onboarding Section 5 update** to populate `students.content_format_preference` from the student's own answers. Current default of `script` is correct for Alex but not demographically reliable.
 4. **Threshold calibration** once `video_quality_scores` has ≥20 rows. Defaults are `standard: 4/5, loose: 3/5`, not data-driven.
 5. Prior follow-ups: forced self-heal E2E verification; optional Frame.io v2 presentation/share resolver.
+
+---
+
+## Session 16 — April 21, 2026
+
+Closed the Session 9 follow-up: forced a real pipeline failure and walked the full self-heal trail end to end, including a real ClickUp comment escalation. Codified the verification as a reusable script.
+
+### Built — `scripts/test-self-heal-e2e.js`
+
+Standalone forced-failure harness. Walks:
+
+1. **Preflight** — asserts `CLICKUP_FRAMEIO_FIELD_ID` is set (so we have something to clear), stubs `frameio.createShareLink` so the throw is deterministic.
+2. **Setup** — creates a real ClickUp task and a `videos` row with a seeded `frameio_asset_id` (past the graceful-skip guard). Uses Alex Mathews on Austin.
+3. **Force** — deletes `process.env.CLICKUP_FRAMEIO_FIELD_ID` at runtime, then calls `pipeline.handleStatusChange(taskId, 'done', campusId)`. The guard inside `createShareLink` throws.
+4. **Restore env** — immediately, so no downstream work is affected.
+5. **Assert** — queries `agent_logs` since test start and verifies:
+   - The original error was logged first (`agent=pipeline`, `action=handleStatusChange`, `status=error`, message contains `CLICKUP_FRAMEIO_FIELD_ID`). CLAUDE.md error rule #1.
+   - Self-heal produced at least one follow-up log (one of: `attempted`, `window_hit`, `claude_error`, `alert_sent`, `alert_skipped`, `alert_failed`, `crashed`).
+   - Either `alert_sent` fired (happy path) OR a different acceptable outcome (window_hit from prior run, recovery_succeeded, etc.).
+   - Real ClickUp comment posted — fetched via `GET /task/{id}/comment` and matched against the expected alert body.
+6. **Teardown** — deletes the video row, archives the ClickUp task. Runs in a `try/finally` wrapper so the env gets restored and test state cleans up even if assertions throw.
+
+### Verified
+
+Test run against real Supabase + real Claude + real ClickUp:
+
+```
+[pipeline] [SUCCESS] status_change: done
+[pipeline] [SUCCESS] create_share_link_started
+[pipeline] [ERROR]   handleStatusChange CLICKUP_FRAMEIO_FIELD_ID not set in .env
+[pipeline] [SUCCESS] self_heal_alert_sent
+```
+
+- Original error logged first (rule 1 ✓)
+- Claude diagnosed the config error as classification=`bug`/`unknown` with confidence=`low` → `recovery_action=none`. Correct behavior — the validator is not supposed to try to recover from missing env vars.
+- Escalation path fired. Real ClickUp comment posted on the test task with the full `:rotating_light: Automation self-heal: unresolved failure` template.
+- Comment round-trip confirmed by `GET /task/{id}/comment` — the same message body appeared on the task, with a timestamp after test start.
+- Teardown clean: video deleted, ClickUp task archived.
+- Note: `handleStatusChange` rethrew the underlying error. This is the documented webhook-replay contract from Session 10 — the outer catch routes through self-heal and rethrows only if `!recovered`, so the `webhook_inbox` row can be marked failed. When called directly outside the webhook harness (as this test does), the rethrow surfaces to the caller, which is expected. Test catches defensively so teardown still runs.
+
+### What the test proves
+
+End-to-end, against real services:
+
+- CLAUDE.md error-handling rule 1 is honored (log BEFORE recovery).
+- Claude diagnosis runs and is schema-validated (invalid responses would degrade to `classification=unknown, confidence=low, recovery_action=none`).
+- Low-confidence / `recovery_action=none` correctly skips recovery and escalates.
+- Escalation produces a real, operator-visible artifact (ClickUp comment) — not just a log line.
+- `handle()` contract holds: no unhandled rejection, teardown possible.
+
+### Files changed
+
+- `scripts/test-self-heal-e2e.js` (new, 7-case harness)
+
+### What's Next
+
+Three things remain on the historical backlog — all deferrable:
+
+1. **Threshold calibration** for the brand voice validator once `video_quality_scores` has ≥20 rows of real data.
+2. **Onboarding Section 5 update** to populate `students.content_format_preference` from student answers (defaults to `script` for everyone now).
+3. **Optional: Frame.io v2 presentation/share resolver.** Only worth building if opaque `f.io/*` or `/presentations/*` URLs turn out to be the common editor pattern in real traffic.
+
+Everything in the Phase 1 build order from `docs/build-order.md` is now live or deliberately deferred. The stack is ready for real production traffic.
