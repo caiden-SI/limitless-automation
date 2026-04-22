@@ -1497,3 +1497,79 @@ Seeded synthetic `failed_cleanup` claims, walked every mode:
 1. **Brand voice examples** (Scott-owned)
 2. **Forced self-heal E2E verification** (test-only — force a real pipeline error and walk the ClickUp-comment escalation path end to end)
 3. **Optional: Frame.io v2 presentation/share resolver** (defer until opaque URLs are evidenced in real traffic)
+
+---
+
+## Session 15 — April 21, 2026
+
+Built the brand-voice validation layer spec'd in `workflows/brand-voice-validation.md`. Replaces the deferred Scott-curated `BRAND_VOICE_EXAMPLES_PATH` approach with a deterministic + LLM two-layer validator that reads per-student signals from onboarding. Ships the generator and the gate together so a single rule module serves both sides.
+
+### Shipped
+
+**`lib/brand-voice-validator.js`** (new) — three exports:
+
+- `validateConcept(concept, student, opts)` — Layer 1 sync rule battery (AI-tell blocklist, brand dictionary casing, length bounds, hook presence, generic openers, payoff endings, proper-noun warnings) + Layer 2 Claude judge (tone-dimension scoring + voice-match score against the student's own onboarding-captured influencer transcripts, thresholds loosen when <2 tone tags extract). Never throws — crash returns `mode: 'off'` with `validator_error`.
+- `validateConcepts(concepts, student, opts)` — batch version, shares one context-load across all 3 concepts.
+- `buildGenerationConstraints(student, opts)` — returns `{ hardConstraints, softGuidelines }` the Scripting Agent inlines into the generation prompt so the two sides can't drift. Deterministic: excerpt selection is seeded by `student.id`, same student always gets the same 3 excerpts.
+
+Tuning constants at the top of the file: AI-tell phrases, forbidden openers, length bounds, OST segment bounds, tone tags, thresholds. `VALIDATOR_VERSION = '2026-04-22'` is persisted on every `video_quality_scores` row for calibration.
+
+**`agents/scripting.js`** — three changes:
+
+- `loadContext` stripped of `BRAND_VOICE_EXAMPLES_PATH` (retired). Voice context comes from `validator.loadSharedContext` now, shared with `buildGenerationConstraints`.
+- `buildPrompt` assembles `HARD CONSTRAINTS` (imperatives mirroring Layer 1) and `VOICE GUIDELINES` (context mirroring Layer 2) as distinct sections in the system prompt. Rules ship once, in `lib/brand-voice-validator.js`; the prompt just formats them.
+- `generateConcepts` refactored to structured return. Shared 2-attempt budget across structural + Layer 1 + Layer 2. On first voice failure, the next prompt appends the specific issues. On second failure, returns `{ aborted: true, issues, attempts }` — not an exception, so `processEvent` can count-and-escalate deterministically.
+- `handleVoiceAbort` (new) — logs `brand_voice_validate_abort` with `payload.eventId` first, then counts prior aborts for the same event_id in the trailing 7 days via `agent_logs` (using Supabase's `payload->>eventId` filter — same pattern self-heal uses for dedup). At `VOICE_ABORT_ESCALATION_THRESHOLD=3`, transitions the pending claim to `failed_cleanup` with an `error_payload` aggregating issues. Below threshold, deletes the claim so the next cron tick retries.
+- `postLogOnlyCommentIfNeeded` (new) — if mode=log_only and any concept had Layer 1/Layer 2 failures, posts ONE ClickUp comment on the first inserted video's task summarizing all failures across all 3 concepts. Single comment per event, not per concept. Non-fatal — log_only must never block the pipeline.
+- `writeConcepts` extended to insert matching `video_quality_scores` rows inside the same try as the videos inserts, so a score-insert failure triggers the full rollback (orphan scores with broken FKs would be worse than a retry).
+
+**`scripts/migrations/2026-04-22-brand-voice-validation.sql`** (applied):
+
+```sql
+ALTER TABLE students ADD COLUMN IF NOT EXISTS content_format_preference text
+  CHECK (content_format_preference IN ('script','on_screen_text','caption_only','mixed')) DEFAULT 'script';
+CREATE TABLE IF NOT EXISTS video_quality_scores (... full per-concept score row ...);
+CREATE INDEX idx_vqs_video_id ...; CREATE INDEX idx_vqs_campus_overall ...;
+ALTER TABLE processed_calendar_events ADD COLUMN IF NOT EXISTS error_payload jsonb;  -- defensive, column already existed
+```
+
+**`scripts/test-brand-voice-validation.js`** (new) — all 11 SOP cases. Cases 1/2/3 hit Layer 1 rules against real Supabase. Case 4 exercises Layer 2 via real Claude (skippable with `SKIP_REAL_CLAUDE=1`). Case 5 monkey-patches `claude.askJson` to throw, asserts `layer2_passed=null` + no crash. Case 6 asserts `mode='off'` makes zero Claude calls. Case 7 flips Alex's `content_format_preference` to `caption_only` in a `try/finally` and asserts the caption rule set ran (not script). Case 8 strips `claude_project_context` and asserts Layer 2 is skipped (`layer2_passed=null`). Case 9 asserts `buildGenerationConstraints` returns populated data AND is deterministic across calls. Case 10 round-trips through real Claude with hard constraints inlined and asserts the output passes Layer 1. Case 11 drives `scripting.processEvent` three times with the same synthetic `event_id`, stubs generation to return Layer-1-failing concepts, asserts attempts 1/2 leave no claim row (retryable), attempt 3 leaves `status='failed_cleanup'` with `error_payload.abortCount >= 3`, and a 4th call short-circuits with `skipped='already_claimed:failed_cleanup'`.
+
+**`workflows/brand-voice-validation.md`** patched:
+
+- Line 100 (proper-noun rule): "Always recorded as `severity: 'warn'` and never contributes to `layer1_passed`" — the ambiguity about `log_only` vs `gate` behavior is gone.
+- Line 179 (log_only comment): explicit that the comment is once per event on the first inserted video's task, not per concept.
+
+**`workflows/scripting-agent.md`** updated — retired the `BRAND_VOICE_EXAMPLES` requirement at line 80 and the file-path dependency at line 152. Voice guidance now comes from `buildGenerationConstraints(student)`.
+
+**`.env.example`** — removed `BRAND_VOICE_EXAMPLES_PATH`, added `BRAND_VOICE_VALIDATION_MODE=log_only` with an inline comment explaining when to flip to `gate`. Mirrored in `.env`.
+
+**`docs/decisions.md`** — new 2026-04-22 entry documenting the two-layer approach, the retirement of `BRAND_VOICE_EXAMPLES_PATH`, and the decision to ship validator + generator-side prompt in one PR.
+
+### Ambiguities the plan flagged against CLAUDE.md and the SOP
+
+The ultraplan surfaced 13 ambiguities before build started. All resolved inline:
+
+1. **Logger status vocabulary** — SOP said `info`/`warn`; `lib/logger.js` enumerates `success|warning|error`. Normalized to the logger's vocabulary.
+2. **Proper-noun severity** — SOP line 100 was ambiguous about gating behavior. Always `severity: 'warn'`, never in `layer1_passed`. SOP patched so the ambiguity can't resurface.
+3. **Caption minimum word count** — SOP gave only max bounds. Defaulted to `min: 20, max: {tiktok:150, instagram:125, default:150}`, tunable.
+4. **Tone extraction method** — deterministic keyword match against `TONE_TAGS` for Phase 1 (matches SOP line 283).
+5. **Escalation counter mechanism** — query `agent_logs` for prior `brand_voice_validate_abort` rows with `payload->>eventId` in the last 7 days. Mirrors self-heal's dedup pattern. No schema change.
+6. **Shared retry budget** — structural + Layer 1 + Layer 2 all share the 2-attempt cap (matches CLAUDE.md "retry ONCE").
+7. **Voice aborts as structured return, not exception** — `generateConcepts` throws for structural/Claude-parse/validator-crash failures (existing contract, still caught by the outer self-heal path), returns `{ aborted, issues }` for voice failures. `processEvent` owns the count-and-escalate decision inline.
+8. **`processed_calendar_events.error_payload` already existed** — migration's ALTER is idempotent / defensive.
+9. **Claude client importable for test mocking** — `require('./claude')` module-reference pattern (same precedent as `lib/self-heal.js`).
+
+### Test + regression status
+
+- Migration applied against live Supabase. Preflight probes both the column and the table.
+- `scripts/test-brand-voice-validation.js` ready to run.
+- Existing `scripts/test-scripting-agent.js` will exercise the new end-to-end path once run (every new `videos` row should produce a matching `video_quality_scores` row with `mode='log_only'`, `overall_passed=true`).
+
+### What's Next
+
+1. **Run `scripts/test-brand-voice-validation.js`** and confirm 11/11 pass. Skippable via `SKIP_REAL_CLAUDE=1` if Claude budget is a concern.
+2. **Regression-run `scripts/test-scripting-agent.js`** to confirm the generator-side refactor didn't break the existing flow.
+3. **Onboarding Section 5 update** to populate `students.content_format_preference` from the student's own answers. Current default of `script` is correct for Alex but not demographically reliable.
+4. **Threshold calibration** once `video_quality_scores` has ≥20 rows. Defaults are `standard: 4/5, loose: 3/5`, not data-driven.
+5. Prior follow-ups: forced self-heal E2E verification; optional Frame.io v2 presentation/share resolver.
