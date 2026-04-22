@@ -1694,3 +1694,43 @@ Two items remain on the backlog, both deferrable:
 2. **Optional: Frame.io v2 presentation/share resolver.** Only worth building if opaque `f.io/*` or `/presentations/*` URLs turn out to be the common editor pattern in real traffic.
 
 Phase 1 is complete. Onboarding now covers every field the brand voice validator reads.
+
+---
+
+## Phase 1 Completion Summary — April 21, 2026
+
+**Short answer: Phase 1 build is complete.** What follows is the honest breakdown.
+
+### Built and live
+
+| Component | Status |
+|---|---|
+| Pipeline Agent — 4 triggers + 1hr Dropbox delay + Frame.io sync | Live, E2E tested |
+| QA Agent — 4 checks, FFmpeg fails closed | Live |
+| Research Agent — scrape + classify + dedup | Built, needs APIFY_API_TOKEN to run live |
+| Performance Agent — weekly pattern recognition | Built, cron registered |
+| Onboarding Agent — 6 sections, server-side state, Section 5 now captures format preference | Live |
+| Scripting Agent — concept generation + atomic claim + brand voice gate | Live, Google Calendar connected |
+| Self-heal — Claude-diagnosed recovery + ClickUp escalation | Live, forced-failure verified |
+| Dashboard — Pipeline / QA queue / activity / editor capacity / signals | Live, RPC-hardened |
+| Brand voice validator — 2-layer, log_only default | Live |
+| All three webhooks — ClickUp, Dropbox, Frame.io | Live with durable inbox |
+| 5 cron jobs registered in server.js | Running |
+| Operator tooling — release-failed-cleanup, reset-onboarding, get-dropbox-token, verify-gcal | Built |
+| 17 integration + unit tests across the stack | All passing |
+
+### Legitimately incomplete (deferred, not forgotten)
+
+1. **Brand voice threshold calibration** — defaults are 4/5 standard, 3/5 loose. Retune after ≥20 real `video_quality_scores` rows accumulate.
+2. **Frame.io presentation/share resolver** — only worth building if editors actually paste opaque `f.io/*` URLs in practice.
+3. **Minor self-heal refinements** — 3 TODOs from Session 10 review (coarse dedup key, fail-open policy, success filter on recency query). All intentionally deferred until we observe storm behavior.
+4. **FFmpeg on Mac Mini** — needs install for production LUFS checks. Startup health check will warn if missing.
+
+### What happens next is operational, not build work
+
+- Scott schedules a "Filming with <student>" event → scripting cron picks it up within 15 min → 3 concepts + ClickUp tasks appear
+- ClickUp status flows fire their respective pipeline handlers
+- Brand voice validator observes in `log_only`; after ~20 videos, calibrate thresholds and flip to `gate`
+- New students onboarded after this point get classified into the right format bucket automatically
+
+**Build complete, production-ready.** Any new work from here is tuning based on real traffic or responding to edge cases that surface in operation.
