@@ -320,3 +320,33 @@ Both set to `active = true`, `campus_id` = Austin campus UUID (`0ba4268f-f010-43
 **Mitigation:** Document in the Section 4 handoff notes so Scott knows before sharing onboarding links. No code changes in Phase 1.
 
 **Status:** Deferred. Revisit during retainer month one or in Phase 2 SOW.
+
+---
+
+### 2026-04-22 | Brand voice validation — two-layer validator replaces BRAND_VOICE_EXAMPLES_PATH
+
+**Decision:** Retire the single-file `BRAND_VOICE_EXAMPLES_PATH` approach. Replace with `lib/brand-voice-validator.js`: a deterministic universal quality floor (Layer 1 — AI-tell blocklist, brand dictionary, length bounds, hook presence, generic openers, payoff endings, proper-noun warnings) plus a Claude-as-judge voice fit gate (Layer 2 — tone-dimension scoring against the student's own onboarding-captured influencer transcripts). Three modes: `off`, `log_only` (default), `gate`. In gate mode, 3 consecutive voice aborts on the same `event_id` escalate the `processed_calendar_events` claim to `status=failed_cleanup` so the operator is forced to look.
+
+**Rationale:** The original plan assumed one Scott-curated reference document could anchor voice for every student. Two problems surfaced before shipping it:
+1. Voice is inherently per-student — a single reference pushes every student toward the same median tone, defeating the point.
+2. Not every student uses scripts. Some record captions only, some record on-screen text only. A script-shaped reference doc doesn't apply.
+
+The validator-side gate works because each student's `onboarding_sessions.influencer_transcripts` already captures their own stated voice reference during Section 3. That's the authoritative per-student signal — use it directly.
+
+**Shipped in one PR, not split.** Both the generation prompt and the post-generation gate read from the same rule module (`lib/brand-voice-validator.js` constants + `buildGenerationConstraints()`). Two copies of rules drifting apart is the real source-of-truth risk; a single module serving both sides eliminates it.
+
+**Consequences:**
+- **Retired:** `BRAND_VOICE_EXAMPLES_PATH` env var removed from `.env.example` and `agents/scripting.js`. File-read code deleted from `loadContext`.
+- **Prompt structure changed:** Scripting Agent now inlines two distinct sections (`HARD CONSTRAINTS` imperatives + `VOICE GUIDELINES` context) assembled by `buildGenerationConstraints(student)`.
+- **New schema:** `students.content_format_preference` (check-constrained to `script|on_screen_text|caption_only|mixed`) + `video_quality_scores` table with per-concept Layer 1 / Layer 2 / overall results for calibration. Migration `scripts/migrations/2026-04-22-brand-voice-validation.sql`.
+- **Retry budget stays at 2** per CLAUDE.md rule. Structural validation + Layer 1 + Layer 2 share one merged `lastError`.
+- **Proper-noun check is always advisory** (`severity: 'warn'`, never gates `layer1_passed`) — a capitalized-word heuristic produces too many false positives to hard-fail on. SOP patched accordingly.
+- **log_only summary comment** is posted once per event on the first inserted video's ClickUp task, not per concept. SOP patched.
+- **Default mode is `log_only`.** Flipping to `gate` is a deliberate operator decision — never default implicitly.
+
+**Follow-ups that stay open:**
+- Onboarding Section 5 update to actually populate `content_format_preference` from student answers (currently defaults to `script` for every existing student).
+- Threshold calibration once `video_quality_scores` has ≥20 rows. The current `standard = score≥4, loose = score≥3` values are defaults, not data-driven.
+- Phase 2: tone dimension extraction via its own Claude pass (Phase 1 uses a deterministic keyword scan against `TONE_TAGS`).
+
+**Status:** Done. Migration applied in Supabase SQL Editor. Test script `scripts/test-brand-voice-validation.js` covers all 11 SOP cases.
