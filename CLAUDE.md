@@ -32,7 +32,7 @@ Foundation (schema → webhook server → PM2) → Agents (pipeline → QA → r
 ## Gotchas
 - `videos` table has no `qa_passed` column — agents.md references it but schema.md omits it. Add as `boolean default null` before QA agent build.
 - Frame.io v4 API — verify comment webhook behavior before building QA trigger (Adobe acquisition may have changed things)
-- Scott's existing `fireflies_sync.py` runs at 9PM nightly — do not replace, integrate alongside
+- Scott's `fireflies_sync.py` runs at 9PM nightly and is retired on delivery day — our Fireflies Agent replaces it, owning both jobs (full transcripts → Supabase AND action items → ClickUp). Running both produces duplicate ClickUp tasks. Before cutover, confirm `FIREFLIES_API_KEY` in `.env` matches the key his script uses, then disable his cron.
 - Dropbox desktop sync is live for the team — do not interfere with existing sync
 - ClickUp List ID for Austin campus needs confirmation from Scott
 - Custom field ID for Frame.io link in ClickUp must be retrieved via API on first run

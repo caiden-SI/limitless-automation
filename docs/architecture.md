@@ -224,7 +224,7 @@ Adjacent items not yet built but in-scope per SOW Section 2:
 - Mac Mini configuration (`workflows/mac-mini-deployment.md`)
 - Frame.io share link on `done` (`workflows/frame-io-share-link.md`)
 - Scripting Agent body
-- Fireflies integration (`workflows/fireflies-integration.md`) is in SOW Section 2 Integrations as "existing integration"; the in-repo addition runs alongside Scott's `fireflies_sync.py` per CLAUDE.md Gotchas.
+- Fireflies integration (`workflows/fireflies-integration.md`) is in SOW Section 2 Integrations as "existing integration". The in-repo agent **replaces** Scott's `fireflies_sync.py` on delivery day — it owns both jobs (full transcripts → `meeting_transcripts` AND action items → ClickUp). Scott's cron is disabled at cutover per CLAUDE.md Gotchas.
 
 The Student Onboarding Agent (`agents/onboarding.js`) is not listed in SOW Section 2 but was added in Session 5 to unblock the Scripting Agent. SOW Section 4 lists "Student data sheet (Claude project context per student)" as a Client Responsibility; the Onboarding Agent automates the Client side of that responsibility.
 
@@ -232,7 +232,7 @@ The Student Onboarding Agent (`agents/onboarding.js`) is not listed in SOW Secti
 
 - **`videos.qa_passed` column** was missing from the original schema. Added during initial migration per `docs/decisions.md` 2026-04-01. Default `null` distinguishes "not yet checked" from "checked and failed".
 - **Frame.io v4 vs v2.** v4 requires Adobe OAuth Server-to-Server. The current developer token only authenticates against v2. Decision 2026-04-02 commits to v2 for all agent integrations until v4 prerequisites are met.
-- **Scott's `fireflies_sync.py` runs at 9 PM nightly.** The planned integration in `workflows/fireflies-integration.md` runs at 10 PM and writes to a new `meeting_transcripts` table. Do not replace Scott's script.
+- **Scott's `fireflies_sync.py` is retired on delivery day.** The planned integration in `workflows/fireflies-integration.md` inherits his 9 PM cadence and owns both jobs — transcripts → `meeting_transcripts` AND action items → ClickUp (Austin list `901707767654`, status `idea`) via `created_action_items` dedup ledger. Extraction uses Claude, not a port of Scott's method. Cutover is disable-his-cron → enable-ours. Pre-cutover check: one text to Scott to confirm `FIREFLIES_API_KEY` parity.
 - **Dropbox desktop sync is live for the team.** Agent code only uses the Dropbox API and never touches local sync state.
 - **ClickUp statuses are lowercase in the API, uppercase in Supabase.** `agents/pipeline.js` line 20 exposes `dbStatus(s) => s.toUpperCase()`. ClickUp reads and writes use lowercase. Supabase status reads, writes, and queries funnel through `dbStatus`. **The dashboard now stores statuses uppercase too** so that comparisons against `videos.status` work without translation. `dashboard/src/components/PipelineView.jsx` and `QAQueue.jsx` use `IDEA`, `READY FOR SHOOTING`, `EDITED`, `WAITING`, etc. throughout, with `statusLabel(s) => s.toLowerCase()` for display. Anyone editing dashboard code must keep this convention.
 - **Google Calendar event format is unconfirmed.** Scripting Agent is blocked on this plus the student context approach. Onboarding Agent now resolves the context blocker; calendar format is still pending.

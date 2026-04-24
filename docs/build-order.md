@@ -36,7 +36,8 @@ Target delivery: April 25, 2026
 - [ ] Verify Fireflies API access
 - [ ] Set up Google Calendar service account + share calendar
 - [ ] Confirm Google Calendar event format with Scott (what does a filming event look like?)
-- [ ] Review Scott's existing `fireflies_sync.py` before building Fireflies integration
+- [ ] Build Fireflies Agent: `lib/fireflies.js` (GraphQL client), `agents/fireflies.js` (transcript ingest + Claude-based action-item extraction → ClickUp Austin list `901707767654` status `idea`). Retires Scott's `fireflies_sync.py` on delivery day per `workflows/fireflies-integration.md`.
+- [ ] Text Scott to confirm `FIREFLIES_API_KEY` in `.env` matches his script's key; resolve before cutover
 
 ---
 

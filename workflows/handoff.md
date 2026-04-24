@@ -190,7 +190,7 @@ Before handoff can begin:
 
 - Phase 2 scope (Premiere Pro agent, music recommendation, and everything in `docs/architecture.md` Out of Scope).
 - Ongoing support contract terms (separate agreement if needed).
-- Migration of Scott's personal scripts (Fireflies) into this repo.
+- Migration of any of Scott's personal scripts beyond Fireflies. The Fireflies Agent absorbs `fireflies_sync.py` at delivery per `workflows/fireflies-integration.md`; other personal scripts stay on his side.
 - Staff training beyond the recorded walkthrough.
 
 ## Acceptance criteria

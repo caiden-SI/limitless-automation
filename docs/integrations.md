@@ -100,9 +100,10 @@ All accounts owned by Limitless Media Agency LLC.
 **Credential location:** 1Password → "Fireflies API Key"
 
 **Notes:**
-- Scott already has a working `fireflies_sync.py` script. Review this before building new integration to avoid duplication.
-- Existing script runs at 9PM nightly via cron, fetches last 48hrs, extracts Scott's action items, deduplicates against ClickUp, creates tasks.
-- Do not break or replace the existing script — integrate alongside it or extend it.
+- Scott has a working `fireflies_sync.py` script that runs at 9PM nightly and creates ClickUp tasks from meeting action items. **That script is retired on delivery day.** Our in-repo Fireflies Agent replaces it and owns both jobs: full transcripts → Supabase `meeting_transcripts`, and action items → ClickUp tasks (Austin list `901707767654`, status `idea`).
+- Our extraction uses Claude over the transcript sentences, not a port of Scott's regex/rule-based method. Claude catches implicit phrasings ("Caiden will send Sarah the outline") that rules miss.
+- **Do not run both.** Running Scott's cron and our agent against the same Fireflies account produces overlapping ClickUp tasks for every meeting in the shared 48-hour window. Cutover procedure (disable his cron → enable ours) is in `workflows/fireflies-integration.md`.
+- Pre-cutover check: text Scott to confirm `FIREFLIES_API_KEY` in our `.env` matches the key his script uses. That's the only thing that requires his input; everything else (ClickUp conventions, GraphQL schema) is already in our docs or public.
 
 ---
 

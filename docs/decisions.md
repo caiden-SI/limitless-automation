@@ -350,3 +350,34 @@ The validator-side gate works because each student's `onboarding_sessions.influe
 - Phase 2: tone dimension extraction via its own Claude pass (Phase 1 uses a deterministic keyword scan against `TONE_TAGS`).
 
 **Status:** Done. Migration applied in Supabase SQL Editor. Test script `scripts/test-brand-voice-validation.js` covers all 11 SOP cases.
+
+---
+
+### 2026-04-23 | Fireflies integration replaces `fireflies_sync.py` rather than running alongside
+
+**Decision:** The in-repo Fireflies Agent absorbs Scott's existing `fireflies_sync.py` script and retires it on delivery day. The agent owns both jobs: full transcripts → Supabase `meeting_transcripts`, and action items → ClickUp tasks (Austin list `901707767654`, status `idea`). Action item extraction uses a Claude pass over the transcript sentences — not a port of Scott's method. Cadence inherited: 9PM nightly.
+
+**Rationale:** The original SOP split responsibilities (his script = action items to ClickUp, our agent = transcripts to Supabase) and scheduled our agent at 10PM to run after his 9PM script. That design has two failure modes:
+
+1. **Duplicate ClickUp tasks.** Both consumers read the same Fireflies API and neither writes to a ledger the other reads. Any future expansion of our agent (or any accidental enablement of action-item handling on our side) immediately produces duplicate ClickUp tasks. The architectural seam is in the wrong place — action-item state needs to live in one ledger, not split across two cron-driven scripts.
+2. **Dependency on Scott's machine.** His script runs on his host, on his schedule, with his credentials. If his machine goes down, the action-item workflow dies. The SOW commits to a delivered system; a critical path that requires Scott's personal cron to keep running is not a delivered system.
+
+Consolidating into our agent puts dedup in one place (`created_action_items` table with `UNIQUE(fireflies_id, action_item_hash)`), puts monitoring in one place (`agent_logs`), and puts scheduling under PM2 where the rest of the pipeline already lives.
+
+**Why Claude extraction, not port Scott's method:**
+Scott's script likely uses regex or rule-based extraction (unconfirmed; we did not read it). A Claude pass over the transcript sentences catches implicit action-item phrasings ("Caiden will send Sarah the outline by Friday") that naïve rules miss, and produces cleaner task titles. The Fireflies GraphQL schema is public, ClickUp list/status conventions are already known from the Pipeline Agent build, and the extraction is self-contained — nothing about this integration actually requires reading Scott's source. The only coordination needed with him is a one-text API key parity check.
+
+**Consequences:**
+- **Schema addition:** `created_action_items` ledger alongside `meeting_transcripts`. Migration staged in `scripts/migrations/`.
+- **`lib/fireflies.js` added:** GraphQL client only. Methods: `fetchRecentTranscripts(windowHours)`, `fetchTranscriptDetail(id)`.
+- **`agents/fireflies.js` added:** orchestration layer that handles transcript ingest, calls Claude for action-item extraction, and creates ClickUp tasks. Retries ClickUp failures via pending-scan on the next run.
+- **Cron moves from 10PM to 9PM.** No longer needs to wait behind Scott's script.
+- **No seed pass.** The 48-hour pre-cutover overlap (where both scripts will have processed the same meetings) produces overlapping-but-not-identical tasks; operator archives Scott's old ones manually. Cheaper than building and rehearsing a seed script, and only happens once.
+- **CLAUDE.md Gotcha rewritten** from "do not replace, integrate alongside" to "replaces on delivery day, confirm API key parity first."
+- **Docs updated:** `workflows/fireflies-integration.md` (full rewrite), `docs/architecture.md` lines 227 and 235, `docs/integrations.md` Fireflies section, `docs/build-order.md` checklist item, `workflows/handoff.md` out-of-scope list.
+
+**Pre-cutover blockers:**
+- Text Scott to confirm `FIREFLIES_API_KEY` in `.env` matches the key his script authenticates with.
+- Test ClickUp list provisioned for integration tests (so test runs don't pollute production Austin list).
+
+**Status:** Spec updated, build pending. Cutover scheduled for Mac Mini delivery day alongside PM2 startup.
