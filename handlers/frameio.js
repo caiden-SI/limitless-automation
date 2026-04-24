@@ -6,7 +6,11 @@
 //
 // comment.created flow:
 //   1. Webhook arrives with asset.id on the payload
-//   2. Look up videos by frameio_asset_id (populated upstream — TODO)
+//   2. Look up videos by frameio_asset_id (populated upstream by
+//      pipeline.syncFrameioLink on the `edited` status transition — see
+//      agents/pipeline.js:337. Opaque URLs leave the column null and the
+//      lookup gracefully no-ops; resolving those is the deferred Frame.io
+//      v2 presentation/share resolver backlog item.)
 //   3. Route to pipeline.handleReviewComment — sets ClickUp task to `waiting`
 //
 // NOTE: Frame.io was acquired by Adobe. Decision 2026-04-02 commits to v2 API
@@ -136,8 +140,11 @@ async function processFrameioEvent(body, inboxId) {
 
 /**
  * comment.created → set the associated ClickUp task to `waiting`.
- * Matches the video by frameio_asset_id. If no match, log and skip —
- * upstream that populates frameio_asset_id is not yet wired.
+ * Matches the video by frameio_asset_id, which is populated by
+ * pipeline.syncFrameioLink when the task transitions to `edited`.
+ * If no match, log and skip — either the editor has not yet pasted
+ * the Frame.io URL into ClickUp, or the URL was opaque and the asset
+ * UUID could not be extracted (deferred Frame.io v2 resolver territory).
  */
 async function handleCommentCreated(body, inboxId) {
   const assetId = body?.asset?.id || null;
