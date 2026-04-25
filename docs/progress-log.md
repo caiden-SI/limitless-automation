@@ -1787,3 +1787,9 @@ Picked **(2)** to honor the schema as specified. Worth raising whether to update
 ### Next session starting point
 
 After the cutover punch list above completes, the only follow-up worth raising is whether to add `action_item_text` to `created_action_items` (SOP update + small migration) so step 3's >48h retry path no longer needs the hash-only placeholder. Optional polish.
+
+---
+
+## Session 19 — April 25, 2026
+
+Schema fix on `created_action_items` ahead of cutover. Added `action_item_text text not null` to the table definition in `workflows/fireflies-integration.md` (spec first), `scripts/migrations/2026-04-24-fireflies-integration.sql`, and `agents/fireflies.js` (insert now stores `item.text`). The migration hadn't been applied yet, so the change is an in-place edit of the `CREATE TABLE` rather than an `ALTER TABLE`. Step 3's `retryPendingClickUpCreates` now reads `action_item_text` from the row and posts the real wording — the hash-only placeholder workaround is gone, and step 4's in-flow comment no longer needs the "in-window vs out-of-window" caveat. `docs/architecture.md` updated to note the column on the Fireflies row of the agent matrix.

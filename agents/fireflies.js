@@ -155,7 +155,7 @@ function fireflyTranscriptUrl(fireflyId) {
 async function retryPendingClickUpCreates(stats) {
   const { data: pending, error } = await supabase
     .from('created_action_items')
-    .select('id, fireflies_id, action_item_hash, campus_id')
+    .select('id, fireflies_id, action_item_hash, action_item_text, campus_id')
     .is('clickup_task_id', null);
   if (error) throw new Error(`Supabase query failed (created_action_items pending): ${error.message}`);
 
@@ -170,16 +170,9 @@ async function retryPendingClickUpCreates(stats) {
         stats.action_items_skipped_unmatched_campus++;
         continue;
       }
-      // Hash-only retry: we don't have the original text in the ledger by
-      // design (the hash is the dedup key). Look it up by re-extracting
-      // is wrong (Claude would produce slightly different text). Instead,
-      // we store enough on retry by re-creating with a placeholder body
-      // pointing at the transcript. Operators can open the Fireflies link
-      // to read the full action item if the placeholder is insufficient.
-      const taskName = `[Action item retry] ${row.action_item_hash.slice(0, 8)}`;
-      const description = `Original action item text was not retained (hash-only ledger).\nFireflies transcript: ${fireflyTranscriptUrl(row.fireflies_id)}`;
+      const description = `${row.action_item_text}\n\nFireflies transcript: ${fireflyTranscriptUrl(row.fireflies_id)}`;
       const created = await clickup.createTask(listId, {
-        name: taskName,
+        name: row.action_item_text.slice(0, 200),
         description,
         status: 'idea',
       });
@@ -243,8 +236,9 @@ async function syncActionItemsForTranscript(transcript, campusId, stats) {
     // Insert into the ledger. UNIQUE(fireflies_id, action_item_hash) means
     // a re-extracted item collides with a prior row — we then look up that
     // row and, if its ClickUp task was never created (null), retry with
-    // the fresh text in hand. This is the in-window (≤48h) retry path;
-    // out-of-window retries fall to step 3's placeholder-text path.
+    // the fresh text in hand. The persisted action_item_text on the row is
+    // what step 3's pending-scan uses for transcripts that have rolled out
+    // of the 48-hour fetch window.
     let ledgerId = null;
     let isFreshRetry = false;
     const { data: inserted, error: insErr } = await supabase
@@ -252,6 +246,7 @@ async function syncActionItemsForTranscript(transcript, campusId, stats) {
       .insert({
         fireflies_id: transcript.id,
         action_item_hash: hash,
+        action_item_text: item.text,
         campus_id: campusId,
       })
       .select('id')

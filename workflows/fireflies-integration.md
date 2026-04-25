@@ -75,6 +75,7 @@ CREATE TABLE created_action_items (
   id uuid primary key default gen_random_uuid(),
   fireflies_id text not null references meeting_transcripts(fireflies_id),
   action_item_hash text not null,
+  action_item_text text not null,
   clickup_task_id text,
   campus_id uuid references campuses(id),
   created_at timestamptz not null default now(),
@@ -83,7 +84,7 @@ CREATE TABLE created_action_items (
 CREATE INDEX created_action_items_pending ON created_action_items(clickup_task_id) WHERE clickup_task_id IS NULL;
 ```
 
-`fireflies_id` on `meeting_transcripts` is the dedup key for transcripts. `action_item_hash` is `sha256(normalize(action_item_text))` — normalization lowercases, collapses whitespace, and strips trailing punctuation so cosmetic differences don't bypass dedup. The `UNIQUE(fireflies_id, action_item_hash)` constraint means re-running the agent over the same transcript does not re-create the same ClickUp task — the insert fails with conflict and the ClickUp call is skipped. `clickup_task_id` is populated only after the ClickUp create succeeds; a null value means the ClickUp write failed and the next run retries. The partial index keeps the retry query cheap. `raw_payload` on `meeting_transcripts` preserves the full Fireflies response for forensic lookups if the flat columns miss something.
+`fireflies_id` on `meeting_transcripts` is the dedup key for transcripts. `action_item_hash` is `sha256(normalize(action_item_text))` — normalization lowercases, collapses whitespace, and strips trailing punctuation so cosmetic differences don't bypass dedup. The `UNIQUE(fireflies_id, action_item_hash)` constraint means re-running the agent over the same transcript does not re-create the same ClickUp task — the insert fails with conflict and the ClickUp call is skipped. `action_item_text` stores the original Claude-extracted text so step 3's pending-scan retry can recreate the ClickUp task with the real wording instead of a hash placeholder, regardless of how long the ClickUp outage lasted. `clickup_task_id` is populated only after the ClickUp create succeeds; a null value means the ClickUp write failed and the next run retries. The partial index keeps the retry query cheap. `raw_payload` on `meeting_transcripts` preserves the full Fireflies response for forensic lookups if the flat columns miss something.
 
 Migration SQL staged in `scripts/migrations/`. Caiden runs it in Supabase SQL Editor. Do not run automatically.
 

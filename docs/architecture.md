@@ -136,7 +136,7 @@ Per CLAUDE.md, agents never call each other. They communicate through Supabase r
 | Performance | `campuses` (active), `performance`, `videos` (script column for transcripts), `research_library` | `performance_signals`, `agent_logs` |
 | Onboarding | `students`, `onboarding_sessions`, `campuses` | `students` (claude_project_context, onboarding_completed_at, handle_*), `onboarding_sessions` (every turn), `agent_logs` |
 | Scripting (stub) | `students`, `performance_signals`, `research_library` (planned) | `videos`, `processed_calendar_events` (planned) |
-| Fireflies | `students` (email + name match), `campuses`, `meeting_transcripts` (dedup), `created_action_items` (dedup ledger + null-task retry) | `meeting_transcripts`, `created_action_items`, `agent_logs` |
+| Fireflies | `students` (email + name match), `campuses`, `meeting_transcripts` (dedup), `created_action_items` (dedup ledger + null-task retry, stores `action_item_text` so retries replay the original wording) | `meeting_transcripts`, `created_action_items`, `agent_logs` |
 
 The `webhook_inbox` table is written and read by `handlers/clickup.js` only. It is not an agent table.
 

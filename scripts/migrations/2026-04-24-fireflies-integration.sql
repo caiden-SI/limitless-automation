@@ -11,6 +11,9 @@
 --      items posted to ClickUp. UNIQUE(fireflies_id, action_item_hash)
 --      makes the agent idempotent night-to-night: re-running over the
 --      same transcript will not re-create the same ClickUp task.
+--      `action_item_text` stores the original Claude-extracted wording
+--      so the pending-scan retry can recreate the ClickUp task verbatim
+--      after any outage length, no hash-only placeholder needed.
 --      `clickup_task_id` is null until the ClickUp create succeeds; the
 --      agent's pending-scan retries any null rows on the next run, which
 --      self-heals transient ClickUp 5xx without ever losing an item.
@@ -43,6 +46,7 @@ CREATE TABLE IF NOT EXISTS created_action_items (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   fireflies_id text NOT NULL REFERENCES meeting_transcripts(fireflies_id),
   action_item_hash text NOT NULL,
+  action_item_text text NOT NULL,
   clickup_task_id text,
   campus_id uuid REFERENCES campuses(id),
   created_at timestamptz NOT NULL DEFAULT now(),
