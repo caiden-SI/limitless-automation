@@ -15,6 +15,7 @@ const research = require('./agents/research');
 const performance = require('./agents/performance');
 const scripting = require('./agents/scripting');
 const pipeline = require('./agents/pipeline');
+const fireflies = require('./agents/fireflies');
 
 const { execFile } = require('child_process');
 
@@ -183,6 +184,15 @@ app.listen(PORT, () => {
   // Pending-footage scan — every 15 minutes, catches videos whose 1-hour
   // delay elapses without a follow-up Dropbox webhook firing
   scheduler.register('footage-scan', '*/15 * * * *', pipeline.scanPendingFootageAll);
+
+  // Fireflies Agent — nightly at 9PM. Wired but env-gated until Scott
+  // disables fireflies_sync.py at cutover. Flip FIREFLIES_CRON_ENABLED=true
+  // in .env on cutover night per workflows/fireflies-integration.md §"Cutover".
+  if (process.env.FIREFLIES_CRON_ENABLED === 'true') {
+    scheduler.register('fireflies-agent', '0 21 * * *', fireflies.run);
+  } else {
+    console.log("[server] fireflies-agent cron NOT registered — set FIREFLIES_CRON_ENABLED=true after Scott disables fireflies_sync.py (workflows/fireflies-integration.md)");
+  }
 });
 
 // Catch unhandled promise rejections — hand to self-heal before PM2 restarts.

@@ -104,6 +104,7 @@ All accounts owned by Limitless Media Agency LLC.
 - Our extraction uses Claude over the transcript sentences, not a port of Scott's regex/rule-based method. Claude catches implicit phrasings ("Caiden will send Sarah the outline") that rules miss.
 - **Do not run both.** Running Scott's cron and our agent against the same Fireflies account produces overlapping ClickUp tasks for every meeting in the shared 48-hour window. Cutover procedure (disable his cron → enable ours) is in `workflows/fireflies-integration.md`.
 - Pre-cutover check: text Scott to confirm `FIREFLIES_API_KEY` in our `.env` matches the key his script uses. That's the only thing that requires his input; everything else (ClickUp conventions, GraphQL schema) is already in our docs or public.
+- **Build status (2026-04-24):** `lib/fireflies.js`, `agents/fireflies.js`, the migration `scripts/migrations/2026-04-24-fireflies-integration.sql`, and the integration test `scripts/test-fireflies-integration.js` are in place. The 9 PM cron is registered in `server.js` only when `FIREFLIES_CRON_ENABLED=true`. The migration has not been applied yet — run it manually in the Supabase SQL Editor before the first run. Two new tables: `meeting_transcripts` (one row per Fireflies transcript) and `created_action_items` (dedup ledger keyed on `fireflies_id` + `action_item_hash`).
 
 ---
 

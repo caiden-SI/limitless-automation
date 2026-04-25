@@ -136,6 +136,7 @@ Per CLAUDE.md, agents never call each other. They communicate through Supabase r
 | Performance | `campuses` (active), `performance`, `videos` (script column for transcripts), `research_library` | `performance_signals`, `agent_logs` |
 | Onboarding | `students`, `onboarding_sessions`, `campuses` | `students` (claude_project_context, onboarding_completed_at, handle_*), `onboarding_sessions` (every turn), `agent_logs` |
 | Scripting (stub) | `students`, `performance_signals`, `research_library` (planned) | `videos`, `processed_calendar_events` (planned) |
+| Fireflies | `students` (email + name match), `campuses`, `meeting_transcripts` (dedup), `created_action_items` (dedup ledger + null-task retry) | `meeting_transcripts`, `created_action_items`, `agent_logs` |
 
 The `webhook_inbox` table is written and read by `handlers/clickup.js` only. It is not an agent table.
 
@@ -149,8 +150,9 @@ Registered in `server.js` via `lib/scheduler.js` on server boot.
 |---|---|---|---|
 | `research-agent` | `0 6 * * *` | Daily 6 AM. Calls `research.runAll()` per active campus. | `server.js` line 172 |
 | `performance-agent` | `0 7 * * 1` | Every Monday 7 AM. Calls `performance.runAll()` per active campus. | `server.js` line 174 |
+| `fireflies-agent` | `0 21 * * *` | Nightly 9 PM. Pulls last-48h transcripts → `meeting_transcripts`, extracts action items via Claude → ClickUp tasks (`idea` status). **Wired but env-gated**: only registers when `FIREFLIES_CRON_ENABLED=true`. Flip on cutover night per `workflows/fireflies-integration.md` §"Cutover" — running this alongside Scott's `fireflies_sync.py` produces duplicate tasks. | `server.js` (gated) |
 
-No Scripting Agent, Onboarding Agent, Fireflies, or OpenClaw cron is registered. The Onboarding Agent runs on demand from the `/onboard` page, not on a schedule. Fireflies and OpenClaw are spec'd in workflow SOPs but not built.
+No Scripting Agent or Onboarding Agent cron is registered. The Onboarding Agent runs on demand from the `/onboard` page, not on a schedule. The Fireflies Agent is built and its cron is registered conditionally; OpenClaw remains spec-only.
 
 ## Webhook map
 
@@ -224,7 +226,7 @@ Adjacent items not yet built but in-scope per SOW Section 2:
 - Mac Mini configuration (`workflows/mac-mini-deployment.md`)
 - Frame.io share link on `done` (`workflows/frame-io-share-link.md`)
 - Scripting Agent body
-- Fireflies integration (`workflows/fireflies-integration.md`) is in SOW Section 2 Integrations as "existing integration". The in-repo agent **replaces** Scott's `fireflies_sync.py` on delivery day — it owns both jobs (full transcripts → `meeting_transcripts` AND action items → ClickUp). Scott's cron is disabled at cutover per CLAUDE.md Gotchas.
+- Fireflies integration (`workflows/fireflies-integration.md`) is in SOW Section 2 Integrations as "existing integration". The in-repo agent **replaces** Scott's `fireflies_sync.py` on delivery day — it owns both jobs (full transcripts → `meeting_transcripts` AND action items → ClickUp). **Status: built, awaiting cutover.** `agents/fireflies.js`, `lib/fireflies.js`, and the `2026-04-24-fireflies-integration.sql` migration are in place; the 9 PM cron is registered in `server.js` only when `FIREFLIES_CRON_ENABLED=true` so Scott's cron and ours don't both fire. Cutover (text Scott → confirm key parity → he disables his cron → flip our flag) is the remaining manual step.
 
 The Student Onboarding Agent (`agents/onboarding.js`) is not listed in SOW Section 2 but was added in Session 5 to unblock the Scripting Agent. SOW Section 4 lists "Student data sheet (Claude project context per student)" as a Client Responsibility; the Onboarding Agent automates the Client side of that responsibility.
 

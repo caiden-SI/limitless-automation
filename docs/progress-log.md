@@ -1734,3 +1734,56 @@ Phase 1 is complete. Onboarding now covers every field the brand voice validator
 - New students onboarded after this point get classified into the right format bucket automatically
 
 **Build complete, production-ready.** Any new work from here is tuning based on real traffic or responding to edge cases that surface in operation.
+
+---
+
+## Session 18 — April 24, 2026
+
+Built the Fireflies integration per `workflows/fireflies-integration.md`. Replaces Scott's `fireflies_sync.py` on cutover. **Cron is wired but disabled** until Scott confirms key parity and disables his cron — see Pending below.
+
+### Built
+
+- **`scripts/migrations/2026-04-24-fireflies-integration.sql`** (new) — staged, not applied. Creates `meeting_transcripts` (one row per Fireflies transcript, `fireflies_id` UNIQUE) and `created_action_items` (dedup ledger, `UNIQUE(fireflies_id, action_item_hash)`, partial index on `clickup_task_id IS NULL` for the nightly retry scan). Both tables include `campus_id` per CLAUDE.md multi-tenant rule.
+- **`lib/fireflies.js`** (new) — GraphQL client. `fetchRecentTranscripts(windowHours = 48)` and `fetchTranscriptDetail(id)`. Bearer auth via `FIREFLIES_API_KEY`. Fails fast on non-2xx, JSON parse error, or GraphQL errors per SOP §"Validation". Selection set lives in one constant so both methods stay in sync.
+- **`agents/fireflies.js`** (new) — orchestration with the SOP's full 5-step flow: fetch 48h → per-transcript ingest (student-by-email-then-name match, campus inheritance, `CAMPUS_DOMAIN_MAP` constant for the Austin organizer domain) → step 3 retry-pending pass for stranded null `clickup_task_id` rows → per-transcript Claude extraction with ON CONFLICT DO NOTHING ledger insert → ClickUp create with `idea` status → summary log to `agent_logs`. Outer try/catch hands to `selfHeal.handle` with a single retry (mirrors `agents/research.js`).
+- **`server.js`** — wired the 9PM cron env-gated. Only registers when `FIREFLIES_CRON_ENABLED=true`. When the flag is unset, boot logs a clear DISABLED line pointing at the workflow doc. Cleaner than commenting out code on cutover night.
+- **`.env.example`** — added `FIREFLIES_CRON_ENABLED` with a comment pointing at the cutover procedure, and `CLICKUP_TEST_LIST_ID` for the integration test.
+- **`scripts/test-fireflies-integration.js`** (new) — six SOP assertions: live Fireflies fetch, full-sync inserts, immediate re-run is a no-op, ClickUp 500 leaves `clickup_task_id` null then retries cleanly, bad API key logs an error and inserts nothing, teardown of test rows + test ClickUp tasks. Header banner enumerates prerequisites. Skips gracefully when `CLICKUP_TEST_LIST_ID` is absent — the Fireflies, Supabase, and dedup assertions still run; only the ClickUp-write assertions skip with a clear `SKIP` log line.
+- **`docs/architecture.md`** — added Fireflies row to the Topology agent matrix, added `fireflies-agent` to the Cron schedule table (flagged env-gated DISABLED), and updated the "Adjacent items not yet built" line to "built, awaiting cutover" with the file paths.
+- **`docs/integrations.md`** — added a Build status note to the Fireflies section.
+
+### One SOP gap I had to resolve
+
+The SOP's `created_action_items` schema stores `action_item_hash` but not the original text. Step 3 says "retry pending ClickUp creates" but has no text to write into the new task. Two paths for fixing this and I picked the second:
+
+1. **Add an `action_item_text` column.** Cleanest, but a deviation from the SOP's stated schema and the SOP's top-line says "Do not deviate from this spec without updating it first."
+2. **Two retry paths, no schema change.** Within the 48h window, step 4's ON CONFLICT path catches the failure: when the insert collides AND the existing row has `clickup_task_id = null`, the agent uses the *freshly extracted text* (which it has in hand) to create the task and updates the row. Outside the window (>48h ClickUp outage), step 3 falls back to a placeholder task body with the action-item hash and a Fireflies link — operators can open the meeting to recover the original wording.
+
+Picked **(2)** to honor the schema as specified. Worth raising whether to update the SOP and add the text column on a future pass — it would simplify step 3 considerably and turn the placeholder into a non-issue. Not blocking cutover.
+
+### Tested
+
+- Syntax-checked all four new/modified JS files via `node --check` — all parse cleanly.
+- The integration test is **not yet run** end-to-end. Doing so requires:
+  - The migration applied in Supabase (manual step pending — see below).
+  - `FIREFLIES_API_KEY` confirmed against an account with recent meetings.
+  - `CLICKUP_TEST_LIST_ID` set (or the test runs in skip-ClickUp mode).
+- The SOP test assertions are mapped 1:1 to the test file; no logical reduction. When the migration is applied and creds are in place, run `node scripts/test-fireflies-integration.js`.
+
+### Pending (the cutover punch list)
+
+1. **Apply the migration.** Open Supabase SQL Editor and run `scripts/migrations/2026-04-24-fireflies-integration.sql`. Until this is done, the agent's first call will throw on `meeting_transcripts` not existing.
+2. **Create a ClickUp test list** and put its ID into `.env` as `CLICKUP_TEST_LIST_ID`. Until this exists, the integration test runs in degraded mode (no ClickUp-write coverage).
+3. **Run the integration test** — `node scripts/test-fireflies-integration.js`. Confirm PASS counts match the SOP assertions.
+4. **Text Scott** to confirm `FIREFLIES_API_KEY` parity with his `fireflies_sync.py`. If keys differ, resolve before flipping the flag.
+5. **Cutover night:** Scott disables his cron (`crontab -l` to confirm), then set `FIREFLIES_CRON_ENABLED=true` in `.env` and restart PM2.
+6. **Watch the first 9PM run** in `agent_logs` and the Austin ClickUp list. Expect Claude-extracted action items as `idea`-status tasks. Any tasks Scott's script created in the prior 48h overlap remain — operator archives if visually noisy.
+7. **Second-night idempotency check.** No new `created_action_items` rows for transcripts seen on night one.
+
+### Known dangling items (not this session)
+
+- `docs/schema.md` is referenced by `CLAUDE.md` and `docs/integrations.md` but does not exist; the canonical schema lives in `docs/architecture.md`. Pre-existing cleanup item, deferred.
+
+### Next session starting point
+
+After the cutover punch list above completes, the only follow-up worth raising is whether to add `action_item_text` to `created_action_items` (SOP update + small migration) so step 3's >48h retry path no longer needs the hash-only placeholder. Optional polish.
