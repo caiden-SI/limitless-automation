@@ -27,7 +27,7 @@ From Fireflies (GraphQL `https://api.fireflies.ai/graphql`, schema at `https://d
 - Action items are NOT fetched from Fireflies. They are extracted by a Claude pass over `sentences` via `lib/claude.js`, see `agents/fireflies.js::extractActionItems`.
 
 From Supabase:
-- `students`: to match transcripts to students by participant email or by name substring in title
+- `students`: to match transcripts to students by name substring in title (the `students` table has no email column today; see `docs/decisions.md` 2026-04-25)
 - `campuses`: to attribute transcripts to a campus by organizer_email domain or explicit mapping
 - `created_action_items`: dedup ledger (see Data model additions) to prevent duplicate ClickUp task creation across nightly runs
 
@@ -94,7 +94,7 @@ Migration SQL staged in `scripts/migrations/`. Caiden runs it in Supabase SQL Ed
 2. **Transcript ingest.** For each returned transcript:
    - Check `meeting_transcripts` for an existing row with matching `fireflies_id`. Skip the insert if found, but do not skip step 3 — transcript dedup and action-item dedup are independent so a failed ClickUp write on a previous run can retry.
    - Call `fireflies.fetchTranscriptDetail(id)` to get the full sentence list if the list query only returned metadata. Implementation detail to verify against the public Fireflies GraphQL schema (`https://docs.fireflies.ai/`) during build — if `transcripts` root returns sentences inline, skip the second call.
-   - Attempt student match: iterate `students`, match by email against participant emails first, then by name substring in transcript title. If zero matches, leave `student_id` null. If more than one match, leave `student_id` null and log a warning.
+   - Attempt student match: iterate `students`, match by case-insensitive name substring in transcript title (`student.name.length >= 3` to avoid false positives like "Al" → every "Alex"). If zero matches, leave `student_id` null. If more than one match, leave `student_id` null and log a warning. Email matching is intentionally not implemented because the `students` table has no email column today; see `docs/decisions.md` 2026-04-25 for the follow-up.
    - Attempt campus match: if `student_id` is set, inherit `campus_id` from the student. Otherwise, match by organizer_email domain against the hardcoded `CAMPUS_DOMAIN_MAP` constant in `agents/fireflies.js`. Current mapping (Phase 1, single campus): `{ 'limitlessyt.com': '0ba4268f-f010-43c5-906c-41509bc9612f' /* Austin */ }`. When a second campus is onboarded, move this mapping into a `campuses.google_workspace_domain` column and resolve via Supabase lookup instead of the in-code constant. Until then, the constant is the source of truth.
    - Concatenate sentences into `transcript_text` (one line per sentence, "Speaker Name: text").
    - Insert into `meeting_transcripts` (skip if `fireflies_id` conflict).

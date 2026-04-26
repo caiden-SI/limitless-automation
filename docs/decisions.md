@@ -381,3 +381,22 @@ Scott's script likely uses regex or rule-based extraction (unconfirmed; we did n
 - Test ClickUp list provisioned for integration tests (so test runs don't pollute production Austin list).
 
 **Status:** Spec updated, build pending. Cutover scheduled for Mac Mini delivery day alongside PM2 startup.
+
+---
+
+### 2026-04-25 | Fireflies student matching is name-substring only; `students.email` is a candidate follow-up
+
+**Decision:** The Fireflies Agent matches transcripts to students by case-insensitive name substring in the transcript title. Email-based matching, originally specced in `workflows/fireflies-integration.md`, has been removed from both the agent and the SOP because the `students` table has no `email` column.
+
+**Rationale:** Surfaced when `node scripts/test-fireflies-integration.js` first ran end-to-end against real Supabase — every `agents/fireflies.js::run()` invocation threw `column students.email does not exist`, which cascaded into a Test 4 failure (the pending-scan retry never executed because the run aborted before reaching it). The schema gap is real: `migrate-students-onboarding.sql` adds `claude_project_context`, `onboarding_completed_at`, and the three social handle columns, but no `email`. The SOP §"Inputs" was written aspirationally against a schema that never landed.
+
+Picked drop-email-matching over add-email-column because the latter requires a new migration, an Onboarding Agent change to populate the field, and a backfill plan for the existing Alex Mathews seed row — none of which is on the cutover punch list. The name-substring path already handles the realistic case (Scott names meetings "Filming with <student>" or similar), and ambiguity is logged when two students share a substring match.
+
+**Consequences:**
+- `agents/fireflies.js::matchStudent` no longer reads `email`; the students preload selects `id, name, campus_id` only.
+- `workflows/fireflies-integration.md` §"Inputs" and §"Process flow" step 2 updated to reflect name-only matching and link back here.
+- Match recall is lower than the SOP's original two-path design — meetings whose titles don't contain the student's name will fall through to `student_id = null` and inherit the campus from the organizer-email domain map. That still posts the action items to the right ClickUp list, just without the per-student attribution.
+
+**Candidate follow-up: add `students.email`.** Would strengthen Fireflies matching here and likely benefit other agents that currently have no way to resolve a student from an external system identifier — Onboarding could populate it during intake, the Scripting Agent could use it to attribute calendar events when the title is generic, and any future reply-to-an-email handler would need it. Worth doing once a second use case appears; not blocking today.
+
+**Status:** Done. Full Fireflies integration test passes 10/0/0 after this fix landed alongside two unrelated environmental fixes — applying the production status workflow to the test ClickUp list `901713258946` (it had ClickUp's default statuses, not `idea`/`ready for shooting`/etc.) and stubbing `claude.askJson` in the test so Test 3's dedup assertion verifies the `UNIQUE(fireflies_id, action_item_hash)` ledger behavior instead of Claude's run-to-run determinism. That stubbing required a one-line refactor in `agents/fireflies.js` to call `claude.askJson` via the module reference rather than a destructured local binding.

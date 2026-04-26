@@ -20,7 +20,23 @@ require('dotenv').config();
 const { supabase } = require('../lib/supabase');
 const fireflies = require('../lib/fireflies');
 const clickup = require('../lib/clickup');
+const claude = require('../lib/claude');
 const fireflyAgent = require('../agents/fireflies');
+
+// Claude action-item extraction is non-deterministic. The dedup-on-rerun
+// assertion in Test 3 only proves what we want it to prove if both runs
+// see the same item list. Stub askJson to a fixed two-item response for
+// the duration of the test so Test 3's "zero new tasks" assertion is
+// actually verifying the ledger's UNIQUE(fireflies_id, action_item_hash)
+// behavior rather than Claude's cooperation.
+const realAskJson = claude.askJson;
+const STUB_ITEMS = {
+  action_items: [
+    { text: 'Fireflies test stub item 1: send the outline by Friday' },
+    { text: 'Fireflies test stub item 2: schedule the follow-up call' },
+  ],
+};
+claude.askJson = async () => STUB_ITEMS;
 
 const TEST_LIST_ID = process.env.CLICKUP_TEST_LIST_ID || null;
 const CAMPUS_ID = fireflyAgent.CAMPUS_DOMAIN_MAP['limitlessyt.com'];
@@ -135,8 +151,9 @@ async function teardown() {
     console.log(`  cleaned ${deletedTasks}/${trackedClickUpTasks.size} ClickUp test tasks`);
   }
 
-  // Restore real createTask for any subsequent code in the same process.
+  // Restore real createTask and askJson for any subsequent code in the same process.
   clickup.createTask = realCreateTask;
+  claude.askJson = realAskJson;
 }
 
 async function main() {
@@ -205,9 +222,11 @@ async function main() {
         bad('could not insert fake meeting_transcripts fixture', fakeMtErr);
       } else {
         const fakeHash = 'a'.repeat(64);
+        const fakeText = 'Fireflies test fixture: send Sarah the outline by Friday';
         const { error: fakeCaiErr } = await supabase.from('created_action_items').insert({
           fireflies_id: fakeTranscriptId,
           action_item_hash: fakeHash,
+          action_item_text: fakeText,
           campus_id: CAMPUS_ID,
         });
         if (fakeCaiErr) {

@@ -12,7 +12,7 @@
 
 const crypto = require('crypto');
 const { supabase } = require('../lib/supabase');
-const { askJson } = require('../lib/claude');
+const claude = require('../lib/claude');
 const { log } = require('../lib/logger');
 const selfHeal = require('../lib/self-heal');
 const fireflies = require('../lib/fireflies');
@@ -62,21 +62,12 @@ function hashActionItem(text) {
 
 /**
  * Resolve a transcript to a student. Returns { studentId, ambiguous }.
- * Email match is exact-case against participant emails. Name fallback is
- * a case-insensitive substring of the student's name in the title, with
- * a minimum length to avoid matching "Al" against every "Alex".
+ * Name-substring only: case-insensitive, requires the student's full name
+ * to appear in the transcript title with a minimum length to avoid
+ * matching "Al" against every "Alex". The students table has no email
+ * column today; see docs/decisions.md 2026-04-25.
  */
 async function matchStudent(transcript, students) {
-  const participantEmails = new Set(
-    (transcript.participants || [])
-      .map((p) => (typeof p === 'string' ? p : p?.email))
-      .filter(Boolean)
-  );
-
-  const emailMatches = students.filter((s) => s.email && participantEmails.has(s.email));
-  if (emailMatches.length === 1) return { studentId: emailMatches[0].id, ambiguous: false };
-  if (emailMatches.length > 1) return { studentId: null, ambiguous: true };
-
   const title = (transcript.title || '').toLowerCase();
   const nameMatches = students.filter(
     (s) => s.name && s.name.length >= NAME_SUBSTRING_MIN && title.includes(s.name.toLowerCase())
@@ -122,7 +113,7 @@ Participants: ${participants || '(unknown)'}
 Transcript:
 ${transcriptForPrompt}`;
 
-  const result = await askJson({ system: EXTRACTION_SYSTEM, prompt, maxTokens: 2048 });
+  const result = await claude.askJson({ system: EXTRACTION_SYSTEM, prompt, maxTokens: 2048 });
   const items = Array.isArray(result?.action_items) ? result.action_items : [];
   return items
     .filter((i) => i && typeof i.text === 'string' && i.text.trim().length > 0)
@@ -345,7 +336,7 @@ async function run() {
     // Pre-load students once. Single-tenant Phase 1 — fine to load all.
     const { data: students, error: sErr } = await supabase
       .from('students')
-      .select('id, name, email, campus_id');
+      .select('id, name, campus_id');
     if (sErr) throw new Error(`Supabase query failed (students): ${sErr.message}`);
 
     // Step 2: per-transcript ingest.
