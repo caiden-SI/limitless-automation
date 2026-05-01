@@ -1793,3 +1793,33 @@ After the cutover punch list above completes, the only follow-up worth raising i
 ## Session 19 — April 25, 2026
 
 Schema fix on `created_action_items` ahead of cutover. Added `action_item_text text not null` to the table definition in `workflows/fireflies-integration.md` (spec first), `scripts/migrations/2026-04-24-fireflies-integration.sql`, and `agents/fireflies.js` (insert now stores `item.text`). The migration hadn't been applied yet, so the change is an in-place edit of the `CREATE TABLE` rather than an `ALTER TABLE`. Step 3's `retryPendingClickUpCreates` now reads `action_item_text` from the row and posts the real wording — the hash-only placeholder workaround is gone, and step 4's in-flow comment no longer needs the "in-window vs out-of-window" caveat. `docs/architecture.md` updated to note the column on the Fireflies row of the agent matrix.
+
+---
+
+## Session 20 — April 30, 2026
+
+Mac Mini cutover. Production webhook server now runs on the Mac Mini behind Tailscale Funnel at `https://limitless-automations-mac-mini.tail15aca0.ts.net`. Win11 dev box is permanently retired — it was the build environment, never a live host. Procedure followed `workflows/mac-mini-deployment.md` end to end.
+
+### Cut over
+
+- **Base setup.** Homebrew, Node 22, PM2 6.0.14, FFmpeg, Git, Tailscale CLI. Repo cloned to `~/limitless-automation`, `.env` populated from 1Password vault "Limitless - Caiden", Google Calendar service account JSON copied with mode `600`.
+- **PM2 boot persistence.** `pm2 startup launchd` registered the LaunchAgent under the auto-login user. Reboot recovered `limitless-webhooks` inside 60s. The LaunchAgent + auto-login pairing is the workaround for `pm2 startup`'s system-wide launchd path needing root, which the personal account can't grant cleanly.
+- **Public endpoint.** Tailscale Funnel chosen over ngrok (Option B in the SOP) — fewer paid vendors, `*.ts.net` URL stable across restarts.
+- **ClickUp webhook.** Existing webhook ID `a8a5d682-ebe1-4cc1-b8a6-5a195859d886` repointed to the Funnel URL via `PUT /team/{team_id}/webhook/{webhook_id}`. Secret unchanged, no recreate.
+- **Dropbox webhook.** URL updated in the Dropbox App Console. The GET `/webhooks/dropbox` handler echoed the verification challenge cleanly; registration accepted on first try.
+- **Frame.io webhook.** Deferred. The token's team-admin scope is insufficient to register a hook; Scott has to do it through the Adobe console. Tracked in Outstanding below.
+- **Smoke test.** `curl` against the live URL fired a synthetic ClickUp `taskStatusUpdated`. `pm2 logs` showed signature verification → `status_change` → Dropbox folder creation, full pipeline path traced.
+
+### One pre-existing data issue surfaced
+
+The April 5 "RUNNING APP" task was sitting at `ready for shooting` with no Dropbox folder ever created — a missed earlier write. Status synced back to `idea` in both ClickUp and Supabase so the next status flip will re-trigger folder creation cleanly. Not a Mac Mini issue; a stale row from Win11 days.
+
+### Outstanding (carry forward)
+
+- **Frame.io webhook** — Scott to register through the Adobe console once the team-admin scope is sorted.
+- **Fireflies cutover** — `FIREFLIES_CRON_ENABLED` still `false` in `.env`. Awaiting Scott disabling `fireflies_sync.py` and confirming key parity per `workflows/fireflies-integration.md`.
+- **Cosmetic cleanups** — four sibling items in `post-cutover-cleanup.md`: logger retry on boot, `verify-integrations.js` Dropbox refresh path, GET `/webhooks/dropbox` logging, `docs/integrations.md` URL refresh. Each is its own PR.
+
+### Status
+
+Mac Mini is the production host. Win11 is permanently retired.
