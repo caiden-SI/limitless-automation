@@ -43,10 +43,17 @@ app.post('/webhooks/dropbox', dropboxHandler);
 app.post('/webhooks/frameio', frameioHandler);
 
 // Dropbox requires GET for webhook verification challenge
-app.get('/webhooks/dropbox', (req, res) => {
+app.get('/webhooks/dropbox', async (req, res) => {
   // Dropbox sends a challenge parameter on webhook registration — echo it back
   const challenge = req.query.challenge;
   if (challenge) {
+    // Log the verification arrival so registration attempts are debuggable.
+    // Truncate the value defensively even though challenges are public.
+    await log({
+      agent: 'dropbox',
+      action: 'challenge_received',
+      payload: { challenge: challenge.slice(0, 10) + '...' },
+    });
     res.set('Content-Type', 'text/plain');
     res.send(challenge);
     return;
