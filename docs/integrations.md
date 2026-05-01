@@ -175,7 +175,8 @@ All accounts owned by Limitless Media Agency LLC.
 ## Webhook Server
 
 **Purpose:** Receives all inbound webhooks from ClickUp, Dropbox, Frame.io. Routes to correct handler.
-**Runtime:** Express.js on Mac Mini, managed by PM2
+**Runtime:** Express.js running on the production Mac Mini under PM2 (auto-restart, launchd boot persistence). Cut over from the Win11 dev box on April 30, 2026.
+**Public URL:** `https://limitless-automations-mac-mini.tail15aca0.ts.net` (Tailscale Funnel; survives Mac Mini restarts).
 **Port:** 3000 (or configurable via .env)
 
 **Routes:**
