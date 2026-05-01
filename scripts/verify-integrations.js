@@ -11,6 +11,7 @@ require('dotenv').config();
 
 const { createClient } = require('@supabase/supabase-js');
 const Anthropic = require('@anthropic-ai/sdk');
+const dropbox = require('../lib/dropbox');
 
 const results = [];
 
@@ -92,13 +93,11 @@ async function verifyAnthropic() {
 // ── 3. Dropbox ───────────────────────────────────────────────
 async function verifyDropbox() {
   console.log('\n── Dropbox ──');
+  // Use lib/dropbox.dropboxFetch so a stale DROPBOX_ACCESS_TOKEN is refreshed
+  // transparently via the 401 → refresh → retry path (token expires every 4h).
   try {
-    const res = await fetch('https://api.dropboxapi.com/2/files/list_folder', {
+    const res = await dropbox.dropboxFetch('https://api.dropboxapi.com/2/files/list_folder', {
       method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${process.env.DROPBOX_ACCESS_TOKEN}`,
-        'Content-Type': 'application/json',
-      },
       body: JSON.stringify({ path: '', recursive: false, limit: 5 }),
     });
     if (res.ok) {
