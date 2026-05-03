@@ -81,6 +81,19 @@ export default function Ops() {
   const inboxRow = (inbox.data || [])[0] || null;
   const sysRow = (sys.data || [])[0] || null;
 
+  // Track the last successful fetch timestamp across the data hooks. The
+  // useSupabaseQuery contract returns a new array reference on every fetch
+  // (setData(result)), so each data-prop reference change marks a refresh.
+  // We watch every poll-driven data source — whichever fetches most often
+  // wins. lib/hooks.js stays untouched (it's on the don't-change list);
+  // this lives in the page that already consumes them.
+  const [lastFetchedAt, setLastFetchedAt] = useState(null);
+  useEffect(() => {
+    if (videos.data || logs.data || editors.data || inbox.data || sys.data) {
+      setLastFetchedAt(Date.now());
+    }
+  }, [videos.data, logs.data, editors.data, inbox.data, sys.data]);
+
   const actions = useMemo(
     () => actionItems({
       videos: videos.data || [],
@@ -144,6 +157,7 @@ export default function Ops() {
           campusLoading={campusLoading}
           totals={totals}
           pulseCells={pulse.cells}
+          lastFetchedAt={lastFetchedAt}
         />
 
         {/* Hero pair — Action Items + System Pulse (two-up; stacks on phone) */}

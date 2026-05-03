@@ -1,25 +1,49 @@
-// Header chrome for Ops + Pipeline routes. Per docs/dashboard-scoring-fix-spec.md:
-//   - Counts row stays (active/stuck/failed) but the alarm-coloring
-//     classes (is-amber, is-red) are removed; numbers default to ink color.
-//     Alarm semantics belong in Action Items.
-//   - Pip strip consumes pulse.cells with --{state} modifier (the spec
-//     replaces the old sysCells shape with the new pulse cells).
-//   - Polling label changes from "POLLING · 15s" to "LIVE".
+// Header chrome for Ops + Pipeline routes.
+//   - Counts row stays (active/stuck/failed); alarm semantics live in
+//     Action Items, so the count numbers stay default-ink.
+//   - Pip strip consumes pulse.cells using each cell's `pipLabel` field
+//     (so Webhook ingestion + Webhook tunnel render distinct labels
+//     instead of both abbreviating to "WEBH").
+//   - LIVE pip transitions to amber + "stale" prefix when no successful
+//     fetch has landed in the last 60s. The dashboard keeps showing the
+//     last data it had — staleness is signalled, not blanking enforced.
 
+import { useEffect, useState } from 'react';
 import { useLiveClock } from '../lib/theme';
 
-function abbrev(label) {
-  return (label || '').split(' ')[0].slice(0, 4).toUpperCase();
-}
+const STALE_AFTER_MS = 60_000;
 
 export default function OpsHeader({
   campusId, campuses, onCampus, campusLoading,
-  totals, pulseCells,
+  totals, pulseCells, lastFetchedAt,
 }) {
   const { dow, time, tzAbbrev } = useLiveClock();
   const stuck = totals?.stuck ?? 0;
   const failed = totals?.failed ?? 0;
   const active = totals?.active ?? 0;
+
+  // Tick every second so the "updated Xs ago" line stays accurate.
+  // Local state only; nothing above this consumes the tick, so a re-render
+  // stops at OpsHeader (won't trigger any data refetch).
+  const [tick, setTick] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setTick(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  const ageMs = lastFetchedAt ? tick - new Date(lastFetchedAt).getTime() : null;
+  const isStale = ageMs == null || ageMs > STALE_AFTER_MS;
+  const livePipState = isStale ? 'amber' : 'green';
+  const liveLabel = isStale ? 'STALE' : 'LIVE';
+  const updatedLabel = ageMs == null
+    ? 'no fetch yet'
+    : ageMs < 1000
+      ? 'just now'
+      : ageMs < 60_000
+        ? `${Math.floor(ageMs / 1000)}s ago`
+        : `${Math.floor(ageMs / 60_000)}m ago`;
+  const updatedPrefix = isStale ? 'stale' : 'updated';
+
   return (
     <div className="lim-header2">
       <div>
@@ -42,9 +66,12 @@ export default function OpsHeader({
         )}
       </div>
       <div className="lim-header2__right">
-        <div className="lim-header2__poll">
-          <span className="lim-header2__poll-dot" />
-          LIVE
+        <div className={`lim-header2__poll lim-header2__poll--${livePipState}`}>
+          <span className={`lim-header2__poll-dot lim-header2__poll-dot--${livePipState}`} />
+          {liveLabel}
+          <span className="lim-header2__poll-fresh">
+            · {updatedPrefix} {updatedLabel}
+          </span>
         </div>
         <div className="lim-header2__counts">
           <strong>{active}</strong> ACTIVE ·{' '}
@@ -59,7 +86,7 @@ export default function OpsHeader({
                 className={`lim-c-pip lim-c-pip--${c.state}`}
                 title={`${c.label}: ${c.detail || c.state}`}
               >
-                {abbrev(c.label)}
+                {c.pipLabel || c.label?.split(' ')[0].slice(0, 4).toUpperCase()}
               </div>
             ))}
           </div>

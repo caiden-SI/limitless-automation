@@ -66,6 +66,16 @@
   font-size: 11px; font-weight: 800; letter-spacing: 0.18em; color: var(--ink-3);
 }
 .lim-header2__poll-dot { width: 8px; height: 8px; background: var(--green); }
+.lim-header2__poll-dot--green { background: var(--green); }
+.lim-header2__poll-dot--amber { background: var(--amber); }
+.lim-header2__poll--amber { color: var(--amber); }
+.lim-header2__poll-fresh {
+  color: var(--ink-3);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  margin-left: 4px;
+}
+.lim-header2__poll--amber .lim-header2__poll-fresh { color: var(--amber); }
 .lim-header2__counts {
   font-size: 11px; font-weight: 800; letter-spacing: 0.16em; color: var(--ink-3);
 }
