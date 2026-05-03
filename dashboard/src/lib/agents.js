@@ -82,6 +82,45 @@ export const INTEGRATIONS = [
   { name: 'Anthropic', key: 'claude', category: 'core' },
 ];
 
+// Compute the most recent moment a cron should have fired (largest cron-tick
+// boundary ≤ now). Returns a Date or null. Mirrors nextCronFire — together
+// they let the dashboard answer "did the cron fire on schedule?" without
+// pulling in cron-parser.
+export function prevCronFire(cron, now = new Date()) {
+  if (!cron) return null;
+  switch (cron) {
+    case '0 6 * * *': {
+      const target = new Date(now);
+      target.setHours(6, 0, 0, 0);
+      if (target > now) target.setDate(target.getDate() - 1);
+      return target;
+    }
+    case '0 7 * * 1': {
+      const target = new Date(now);
+      target.setHours(7, 0, 0, 0);
+      const dow = target.getDay(); // 0=Sun, 1=Mon, ..., 6=Sat
+      const daysSinceMon = (dow + 6) % 7;
+      target.setDate(target.getDate() - daysSinceMon);
+      if (target > now) target.setDate(target.getDate() - 7);
+      return target;
+    }
+    case '0 21 * * *': {
+      const target = new Date(now);
+      target.setHours(21, 0, 0, 0);
+      if (target > now) target.setDate(target.getDate() - 1);
+      return target;
+    }
+    case '*/15 * * * *': {
+      const target = new Date(now);
+      const prevMinute = Math.floor(target.getMinutes() / 15) * 15;
+      target.setMinutes(prevMinute, 0, 0);
+      return target;
+    }
+    default:
+      return null;
+  }
+}
+
 // Compute the next firing of a tiny subset of cron expressions we actually
 // register. Returns a Date or null. Keeps us from pulling in cron-parser.
 export function nextCronFire(cron, now = new Date()) {

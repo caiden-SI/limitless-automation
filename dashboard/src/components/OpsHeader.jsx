@@ -1,6 +1,10 @@
-// Header chrome for Ops + Pipeline routes — ported from
-// dir-c-responsive.jsx. Eyebrow → mega clock on the left; live indicator,
-// summary counts, and abbreviated status pips on the right.
+// Header chrome for Ops + Pipeline routes. Per docs/dashboard-scoring-fix-spec.md:
+//   - Counts row stays (active/stuck/failed) but the alarm-coloring
+//     classes (is-amber, is-red) are removed; numbers default to ink color.
+//     Alarm semantics belong in Action Items.
+//   - Pip strip consumes pulse.cells with --{state} modifier (the spec
+//     replaces the old sysCells shape with the new pulse cells).
+//   - Polling label changes from "POLLING · 15s" to "LIVE".
 
 import { useLiveClock } from '../lib/theme';
 
@@ -10,7 +14,7 @@ function abbrev(label) {
 
 export default function OpsHeader({
   campusId, campuses, onCampus, campusLoading,
-  totals, sysCells, pollingInterval = '15s',
+  totals, pulseCells,
 }) {
   const { dow, time, tzAbbrev } = useLiveClock();
   const stuck = totals?.stuck ?? 0;
@@ -40,16 +44,16 @@ export default function OpsHeader({
       <div className="lim-header2__right">
         <div className="lim-header2__poll">
           <span className="lim-header2__poll-dot" />
-          POLLING · {pollingInterval}
+          LIVE
         </div>
         <div className="lim-header2__counts">
           <strong>{active}</strong> ACTIVE ·{' '}
-          <strong className={stuck > 0 ? 'is-amber' : ''}>{stuck}</strong> STUCK ·{' '}
-          <strong className={failed > 0 ? 'is-red' : ''}>{failed}</strong> QA
+          <strong>{stuck}</strong> STUCK ·{' '}
+          <strong>{failed}</strong> QA
         </div>
-        {sysCells && (
+        {pulseCells && pulseCells.length > 0 && (
           <div className="lim-header2__pips">
-            {sysCells.map((c) => (
+            {pulseCells.map((c) => (
               <div
                 key={c.id}
                 className={`lim-c-pip lim-c-pip--${c.state}`}

@@ -90,6 +90,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS research_library_campus_url
 -- Webhook inbox status. The webhook_inbox table is global (no campus_id),
 -- but the RPC takes p_campus_id for API consistency with the rest of the
 -- dashboard surface and future tenant-scoping.
+--
+-- latest_failed_error_message added 2026-05-03 for the scoring-fix spec's
+-- webhook-fail action item detail line.
 CREATE OR REPLACE FUNCTION get_campus_webhook_inbox_status(p_campus_id uuid)
 RETURNS TABLE (
   total bigint,
@@ -98,23 +101,41 @@ RETURNS TABLE (
   failed bigint,
   oldest_pending_received_at timestamptz,
   latest_failed_at timestamptz,
-  latest_received_at timestamptz
+  latest_received_at timestamptz,
+  latest_failed_error_message text
 )
 LANGUAGE sql SECURITY DEFINER STABLE
 AS $$
   SELECT
-    COUNT(*)::bigint AS total,
-    COUNT(*) FILTER (WHERE processed_at IS NOT NULL)::bigint AS processed,
-    COUNT(*) FILTER (WHERE processed_at IS NULL AND failed_at IS NULL)::bigint AS pending,
-    COUNT(*) FILTER (WHERE failed_at IS NOT NULL)::bigint AS failed,
-    MIN(received_at) FILTER (WHERE processed_at IS NULL AND failed_at IS NULL) AS oldest_pending_received_at,
-    MAX(failed_at) AS latest_failed_at,
-    MAX(received_at) AS latest_received_at
+    COUNT(*)::bigint,
+    COUNT(*) FILTER (WHERE processed_at IS NOT NULL)::bigint,
+    COUNT(*) FILTER (WHERE processed_at IS NULL AND failed_at IS NULL)::bigint,
+    COUNT(*) FILTER (WHERE failed_at IS NOT NULL)::bigint,
+    MIN(received_at) FILTER (WHERE processed_at IS NULL AND failed_at IS NULL),
+    MAX(failed_at),
+    MAX(received_at),
+    (SELECT error_message FROM webhook_inbox
+       WHERE failed_at IS NOT NULL
+       ORDER BY failed_at DESC LIMIT 1)
   FROM webhook_inbox;
 $$;
 
--- System health summary. One row with the timestamps and counts the strip
--- needs to render five health cells.
+-- System health summary. One row with the timestamps and counts the
+-- dashboard's three layers (Action Items, System Pulse, Integration
+-- Activity) need.
+--
+-- Per docs/dashboard-scoring-fix-spec.md:
+--  - last_*_run drops the `status = 'success'` filter. The dashboard
+--    separates "did it fire" from "did it succeed"; an erroring cron
+--    still fired and surfaces in the error-spike action item.
+--  - system_uptime is the earliest agent_logs row for this campus, so
+--    the cron-rule decision table can recognise crons that have never
+--    been due during this system's lifetime.
+--  - edited_video_count + lufs_errors_24h gate the audio-normalization
+--    pulse cell — if no EDITED video has ever existed, the LUFS check
+--    has never been exercised and the cell stays green.
+--  - ffmpeg_boot_check_status and last_lufs_measurement remain in the
+--    table for backward compat; the new code stops reading them.
 CREATE OR REPLACE FUNCTION get_campus_system_health_summary(p_campus_id uuid)
 RETURNS TABLE (
   last_research_run timestamptz,
@@ -124,19 +145,22 @@ RETURNS TABLE (
   last_lufs_measurement timestamptz,
   ffmpeg_boot_check_status text,
   errors_last_hour bigint,
-  last_webhook_received_at timestamptz
+  last_webhook_received_at timestamptz,
+  system_uptime timestamptz,
+  edited_video_count bigint,
+  lufs_errors_24h integer
 )
 LANGUAGE sql SECURITY DEFINER STABLE
 AS $$
   SELECT
     (SELECT MAX(created_at) FROM agent_logs
-       WHERE campus_id = p_campus_id AND agent_name = 'research' AND status = 'success'),
+       WHERE campus_id = p_campus_id AND agent_name = 'research'),
     (SELECT MAX(created_at) FROM agent_logs
-       WHERE campus_id = p_campus_id AND agent_name = 'performance' AND status = 'success'),
+       WHERE campus_id = p_campus_id AND agent_name = 'performance'),
     (SELECT MAX(created_at) FROM agent_logs
-       WHERE campus_id = p_campus_id AND agent_name = 'scripting' AND status = 'success'),
+       WHERE campus_id = p_campus_id AND agent_name = 'scripting'),
     (SELECT MAX(created_at) FROM agent_logs
-       WHERE campus_id = p_campus_id AND agent_name = 'fireflies' AND status = 'success'),
+       WHERE campus_id = p_campus_id AND agent_name = 'fireflies'),
     (SELECT MAX(created_at) FROM agent_logs
        WHERE campus_id = p_campus_id AND agent_name = 'qa' AND action ILIKE '%lufs%'),
     (SELECT status FROM agent_logs
@@ -145,7 +169,17 @@ AS $$
     (SELECT COUNT(*) FROM agent_logs
        WHERE campus_id = p_campus_id AND status = 'error'
          AND created_at > NOW() - INTERVAL '1 hour')::bigint,
-    (SELECT MAX(received_at) FROM webhook_inbox);
+    (SELECT MAX(received_at) FROM webhook_inbox),
+    (SELECT MIN(created_at) FROM agent_logs
+       WHERE campus_id = p_campus_id),
+    (SELECT COUNT(*) FROM videos
+       WHERE campus_id = p_campus_id AND status = 'EDITED')::bigint,
+    (SELECT COUNT(*) FROM agent_logs
+       WHERE campus_id = p_campus_id
+         AND agent_name = 'qa'
+         AND action ILIKE '%lufs%'
+         AND status = 'error'
+         AND created_at > NOW() - INTERVAL '24 hours')::integer;
 $$;
 
 GRANT EXECUTE ON FUNCTION get_campus_webhook_inbox_status(uuid) TO anon;

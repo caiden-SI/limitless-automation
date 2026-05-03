@@ -15,7 +15,7 @@ import {
   useVideos,
   useWebhookInboxStatus,
 } from '../lib/hooks';
-import { isStuck, operationalHealth, systemHealth } from '../lib/health';
+import { actionItems, isStuck, systemPulse } from '../lib/health';
 import { buildCssVars, useDisplayPrefs } from '../lib/theme';
 // Lazy so three.js code-splits out of the main bundle. We also gate the
 // mount on `grainEnabled`, so mobile / toggle-off / amber-or-red sessions
@@ -81,13 +81,19 @@ export default function Ops() {
   const inboxRow = (inbox.data || [])[0] || null;
   const sysRow = (sys.data || [])[0] || null;
 
-  const ops = useMemo(
-    () => operationalHealth({ videos: videos.data || [], editors: editors.data || [] }),
-    [videos.data, editors.data],
+  const actions = useMemo(
+    () => actionItems({
+      videos: videos.data || [],
+      editors: editors.data || [],
+      logs: logs.data || [],
+      inbox: inboxRow,
+      summary: sysRow,
+    }),
+    [videos.data, editors.data, logs.data, inboxRow, sysRow],
   );
-  const sysHealth = useMemo(
-    () => systemHealth({ inbox: inboxRow, summary: sysRow }),
-    [inboxRow, sysRow],
+  const pulse = useMemo(
+    () => systemPulse({ logs: logs.data || [], inbox: inboxRow, summary: sysRow }),
+    [logs.data, inboxRow, sysRow],
   );
 
   // Header summary counts — drive the eyebrow line and the pip strip.
@@ -100,23 +106,9 @@ export default function Ops() {
     };
   }, [videos.data]);
 
-  // System cells with detail strings for the header pip tooltips.
-  const sysCellsWithDetail = useMemo(
-    () =>
-      sysHealth.cells.map((c) => ({
-        ...c,
-        detail:
-          c.id === 'webhook' && inboxRow
-            ? `${inboxRow.pending} pending · ${inboxRow.failed} failed`
-            : c.id === 'errors'
-              ? `${sysHealth.errors} in last hour`
-              : '',
-      })),
-    [sysHealth, inboxRow],
-  );
-
-  // Pause grain on amber/red. Brief §3.8: motion behind triage is fatiguing.
-  const sysIsClean = sysHealth.score >= 90;
+  // Pause grain when the System Pulse has any non-green cell. Spec keeps the
+  // brief's "motion behind triage is fatiguing" rule.
+  const sysIsClean = pulse.cells.every((c) => c.state === 'green');
   const grainEnabled = bg === 'on' && !isPhone && sysIsClean;
 
   // Tweaks panel was dropped from production per project requirements; the
@@ -151,13 +143,12 @@ export default function Ops() {
           onCampus={setCampusId}
           campusLoading={campusLoading}
           totals={totals}
-          sysCells={sysCellsWithDetail}
-          pollingInterval="15s"
+          pulseCells={pulse.cells}
         />
 
-        {/* Hero pair — Operational + System (always two-up, stacks on phone) */}
+        {/* Hero pair — Action Items + System Pulse (two-up; stacks on phone) */}
         <div className="lim-grid-2">
-          <HealthBars ops={ops} sys={sysHealth} />
+          <HealthBars actions={actions} pulse={pulse} />
         </div>
 
         {/* Agents + Upcoming Shoots (two-up on Studio Display, stacks on phone) */}
@@ -174,23 +165,27 @@ export default function Ops() {
           </>
         )}
 
-        {/* Phone-only KPI row */}
+        {/* Phone-only KPI row — tones derived from action items / pulse */}
         {isPhone && (
           <div className="lim-grid-3">
             <Kpi
               n={totals.stuck}
               label="STUCK"
-              tone={totals.stuck > 3 ? 'red' : totals.stuck > 0 ? 'amber' : 'green'}
+              tone={actions.some((a) => a.category === 'stuck') ? 'red' : 'green'}
             />
             <Kpi
               n={totals.failed}
               label="QA FAIL"
-              tone={totals.failed > 0 ? 'red' : 'green'}
+              tone={actions.some((a) => a.category === 'qa-fail') ? 'red' : 'green'}
             />
             <Kpi
-              n={sysHealth.cells.filter((c) => c.state !== 'green').length}
+              n={pulse.count}
               label="ALERTS"
-              tone={sysHealth.score >= 90 ? 'green' : sysHealth.score >= 60 ? 'amber' : 'red'}
+              tone={
+                pulse.count === 0 ? 'green'
+                : pulse.cells.some((c) => c.state === 'red') ? 'red'
+                : 'amber'
+              }
             />
           </div>
         )}
@@ -207,7 +202,7 @@ export default function Ops() {
           <>
             <QAQueue campusId={campusId} agentLogs={logs.data} />
             <EditorCapacity campusId={campusId} />
-            <SystemHealthStrip system={sysHealth} inbox={inboxRow} summary={sysRow} />
+            <SystemHealthStrip pulse={pulse} />
             <PerformanceSignals campusId={campusId} />
             <IntegrationHealth logs={logs.data} inbox={inboxRow} />
             <LiveEventStream
@@ -225,7 +220,7 @@ export default function Ops() {
             <PerformanceSignals campusId={campusId} />
             <div className="lim-grid-2">
               <IntegrationHealth logs={logs.data} inbox={inboxRow} />
-              <SystemHealthStrip system={sysHealth} inbox={inboxRow} summary={sysRow} />
+              <SystemHealthStrip pulse={pulse} />
             </div>
             <LiveEventStream
               logs={logs.data}
@@ -238,7 +233,7 @@ export default function Ops() {
             <div className="lim-bottom-col">
               <QAQueue campusId={campusId} agentLogs={logs.data} />
               <EditorCapacity campusId={campusId} />
-              <SystemHealthStrip system={sysHealth} inbox={inboxRow} summary={sysRow} />
+              <SystemHealthStrip pulse={pulse} />
             </div>
             <div className="lim-bottom-col">
               <PerformanceSignals campusId={campusId} />

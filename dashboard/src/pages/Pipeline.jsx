@@ -81,8 +81,8 @@ export default function Pipeline() {
           <div className="lim-header2__right">
             <div className="lim-header2__counts">
               <strong>{totals.active}</strong> ACTIVE ·{' '}
-              <strong className={totals.stuck > 0 ? 'is-amber' : ''}>{totals.stuck}</strong> STUCK ·{' '}
-              <strong className={totals.failed > 0 ? 'is-red' : ''}>{totals.failed}</strong> QA
+              <strong>{totals.stuck}</strong> STUCK ·{' '}
+              <strong>{totals.failed}</strong> QA
             </div>
             {campuses && campuses.length > 1 && (
               <select

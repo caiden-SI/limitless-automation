@@ -161,6 +161,11 @@
   font-size: 96px; font-weight: 800; line-height: 0.9;
   letter-spacing: -0.05em; font-feature-settings: 'tnum' 1;
 }
+/* Word variant — used for "ALL CLEAR" / "ALL GREEN" empty states.
+ * Scaled down so the headline doesn't overflow the hero. */
+.lim-cpv-hero-num--word {
+  font-size: 56px; letter-spacing: -0.03em;
+}
 .lim-cpv-hero-denom { font-size: 22px; font-weight: 600; color: var(--ink-3); }
 .lim-cpv-hero-bar { display: flex; gap: 2px; height: 10px; margin-top: 4px; }
 .lim-cpv-hero-seg { background: var(--bg-3); position: relative; flex: 1; }
@@ -477,6 +482,7 @@
 .lim-cpv-int-dot--green { background: var(--green); }
 .lim-cpv-int-dot--amber { background: var(--amber); }
 .lim-cpv-int-dot--red   { background: var(--red); }
+.lim-cpv-int-dot--neutral { background: var(--ink-3); }
 .lim-cpv-int-name { font-size: 13px; font-weight: 700; min-width: 96px; }
 .lim-cpv-int-status { font-size: 11px; font-weight: 700; letter-spacing: 0.04em; }
 .lim-cpv-int-status--green { color: var(--green); }
