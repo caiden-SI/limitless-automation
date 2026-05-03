@@ -1,113 +1,27 @@
-:root {
-  --text: #6b7280;
-  --text-h: #111827;
-  --bg: #ffffff;
-  --border: #e5e7eb;
-  --code-bg: #f9fafb;
-
-  font: 14px/1.5 system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
-  color: var(--text);
-  background: var(--bg);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --text: #9ca3af;
-    --text-h: #f3f4f6;
-    --bg: #111827;
-    --border: #1f2937;
-    --code-bg: #1f2937;
-  }
-}
+/* Base reset + font defaults. All theme/grain/alpha tokens are set inline
+ * on the dashboard root in Ops.jsx / Pipeline.jsx (matching the design
+ * source so the per-page CSS variables stay self-contained). */
 
 * { box-sizing: border-box; }
 
+html, body, #root { margin: 0; padding: 0; min-height: 100%; }
+
 body {
-  margin: 0;
-}
-
-/* App layout */
-.app {
-  min-height: 100vh;
-  display: flex;
-  flex-direction: column;
-}
-
-.header {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  padding: 0 20px;
-  border-bottom: 1px solid var(--border);
-  height: 52px;
-  flex-shrink: 0;
-}
-
-.header h1 {
-  font-size: 18px;
-  font-weight: 700;
-  color: var(--text-h);
-  margin: 0;
-  letter-spacing: -0.5px;
-}
-
-.tabs {
-  display: flex;
-  gap: 2px;
-  flex: 1;
-}
-
-.tab {
-  background: none;
-  border: none;
-  padding: 14px 12px;
+  background: #f6f6f4;
+  color: #0a0c0e;
+  font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', system-ui, sans-serif;
   font-size: 13px;
-  color: var(--text);
-  cursor: pointer;
-  border-bottom: 2px solid transparent;
-  transition: color 0.15s, border-color 0.15s;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
-.tab:hover {
-  color: var(--text-h);
+:root[data-theme='dark'] body { background: #0a0c0e; color: #f5f5f2; }
+
+:root[data-mono='on'] body {
+  font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-feature-settings: 'tnum' 1, 'ss01' 1;
 }
 
-.tab--active {
-  color: var(--text-h);
-  font-weight: 500;
-  border-bottom-color: #3b82f6;
-}
-
-.campus-select select {
-  background: var(--code-bg);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 5px 10px;
-  font-size: 13px;
-  color: var(--text-h);
-}
-
-.main {
-  flex: 1;
-  padding: 16px 20px;
-  overflow-y: auto;
-}
-
-.panel h2 {
-  font-size: 16px;
-  font-weight: 600;
-  color: var(--text-h);
-  margin: 0 0 12px;
-}
-
-.loading {
-  color: var(--text);
-  font-size: 13px;
-  padding: 20px 0;
-}
-
-.error {
-  color: #ef4444;
-  font-size: 13px;
-  padding: 20px 0;
-}
+a { color: inherit; text-decoration: none; }
+button { font: inherit; color: inherit; }
