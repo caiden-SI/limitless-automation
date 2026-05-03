@@ -160,8 +160,8 @@ export function summarizeAgent(name, logs, now = Date.now()) {
 //
 // A cron that hasn't been due yet during the system's lifetime is green by
 // definition. A gate that hasn't been exercised (no `EDITED` videos → no
-// LUFS check) is green by definition. We never invent failures from
-// missing data.
+// QA check) is green by definition. We never invent failures from missing
+// data.
 
 const truncate = (s, max = 140) =>
   !s ? s : (s.length > max ? `${s.slice(0, max - 1)}…` : s);
@@ -222,7 +222,10 @@ function worstState(states) {
 export function actionItems({ videos = [], editors = [], logs = [], inbox = null, summary = null } = {}, now = Date.now()) {
   const items = [];
 
-  // 1. Stuck videos
+  // 1. Stuck videos.
+  // Headline always names the status in uppercase. Detail differs by
+  // shape: single-status → oldest age (adds info); multi-status →
+  // per-status breakdown (the only useful summary).
   const stuckVideos = videos.filter((v) => isStuck(v, now));
   if (stuckVideos.length > 0) {
     const byStatus = {};
@@ -230,12 +233,27 @@ export function actionItems({ videos = [], editors = [], logs = [], inbox = null
       byStatus[v.status] = (byStatus[v.status] || 0) + 1;
     }
     const statusList = Object.keys(byStatus);
-    const headline = statusList.length === 1
-      ? `${stuckVideos.length} stuck in ${statusLabel(statusList[0])}`
-      : `${stuckVideos.length} stuck in pipeline`;
-    const detail = Object.entries(byStatus)
-      .map(([s, n]) => `${s}: ${n}`)
-      .join(' · ');
+    const word = stuckVideos.length === 1 ? 'video' : 'videos';
+    let headline;
+    let detail;
+    if (statusList.length === 1) {
+      const status = statusList[0];
+      headline = `${stuckVideos.length} ${word} stuck in ${status}`;
+      const oldestAgeMs = stuckVideos.reduce((max, v) => {
+        const age = now - new Date(v.updated_at).getTime();
+        return age > max ? age : max;
+      }, 0);
+      const oldestDays = Math.floor(oldestAgeMs / DAY);
+      const oldestHours = Math.floor(oldestAgeMs / HOUR);
+      detail = oldestDays >= 1
+        ? `oldest stuck: ${oldestDays} day${oldestDays === 1 ? '' : 's'}`
+        : `oldest stuck: ${oldestHours}h`;
+    } else {
+      headline = `${stuckVideos.length} ${word} stuck in pipeline`;
+      detail = Object.entries(byStatus)
+        .map(([s, n]) => `${s}: ${n}`)
+        .join(' · ');
+    }
     items.push({
       id: 'stuck',
       category: 'stuck',
@@ -246,7 +264,8 @@ export function actionItems({ videos = [], editors = [], logs = [], inbox = null
     });
   }
 
-  // 2. Editor overload — one item per overloaded editor
+  // 2. Editor overload — one item per overloaded editor.
+  // Detail adds the over-by count; headline already states name + count.
   const editorCounts = {};
   for (const v of videos) {
     if (v.assignee_id && v.status === 'IN EDITING') {
@@ -256,11 +275,12 @@ export function actionItems({ videos = [], editors = [], logs = [], inbox = null
   for (const ed of editors) {
     const n = editorCounts[ed.id] || 0;
     if (n >= 5) {
+      const over = n - 5;
       items.push({
         id: `editor-overload:${ed.id}`,
         category: 'editor-overload',
         headline: `${ed.name} overloaded — ${n} active edits`,
-        detail: truncate(`${ed.name}: ${n} active edits.`),
+        detail: truncate(`limit 5 · ${over} over capacity`),
         anchor: '#editor-capacity',
         urgency: 1,
       });
@@ -437,29 +457,33 @@ export function systemPulse({ logs = [], inbox = null, summary = null } = {}, no
     }
   }
 
-  // Audio normalization — gate principle
+  // Output quality — gate principle, broadened from LUFS-only to all QA
+  // failures (caption formatting, brand-term spell check, stutter/filler
+  // detection, LUFS audio). qa_errors_24h is the gating metric.
   const editedCount = Number(summary?.edited_video_count ?? 0);
-  const lufsErrors = Number(summary?.lufs_errors_24h ?? 0);
-  let audioState = 'green';
-  let audioDetail;
+  const qaErrors = Number(summary?.qa_errors_24h ?? 0);
+  let outputState = 'green';
+  let outputDetail;
   if (editedCount === 0) {
-    audioDetail = 'no EDITED videos yet — gate not exercised';
-  } else if (lufsErrors === 0) {
-    audioDetail = 'no LUFS failures';
-  } else if (lufsErrors === 1) {
-    audioState = 'amber';
-    audioDetail = '1 LUFS error in last 24h';
+    outputDetail = 'no EDITED videos yet — gate not exercised';
+  } else if (qaErrors === 0) {
+    outputDetail = 'no QA failures in last 24h';
+  } else if (qaErrors === 1) {
+    outputState = 'amber';
+    outputDetail = '1 QA error in last 24h';
   } else {
-    audioState = 'red';
-    audioDetail = `${lufsErrors} LUFS errors in last 24h`;
+    outputState = 'red';
+    outputDetail = `${qaErrors} QA errors in last 24h`;
   }
 
+  // Per-cell pipLabel disambiguates the abbreviated pip strip in the header
+  // (otherwise both Webhook ingestion and Webhook tunnel would render WEBH).
   const cells = [
-    { id: 'webhook', label: 'Webhook ingestion', state: webhookState, detail: truncate(webhookDetail, 60) },
-    { id: 'cron',    label: 'Cron schedule',     state: cronState,    detail: truncate(cronDetail, 60) },
-    { id: 'errors',  label: 'Worker errors',     state: errorsState,  detail: truncate(errorsDetail, 60) },
-    { id: 'tunnel',  label: 'Webhook tunnel',    state: tunnelState,  detail: truncate(tunnelDetail, 60) },
-    { id: 'audio',   label: 'Audio normalization', state: audioState, detail: truncate(audioDetail, 60) },
+    { id: 'webhook', label: 'Webhook ingestion', pipLabel: 'INGEST', state: webhookState, detail: truncate(webhookDetail, 60) },
+    { id: 'cron',    label: 'Cron schedule',     pipLabel: 'CRON',   state: cronState,    detail: truncate(cronDetail, 60) },
+    { id: 'errors',  label: 'Worker errors',     pipLabel: 'ERRORS', state: errorsState,  detail: truncate(errorsDetail, 60) },
+    { id: 'tunnel',  label: 'Webhook tunnel',    pipLabel: 'TUNNEL', state: tunnelState,  detail: truncate(tunnelDetail, 60) },
+    { id: 'output',  label: 'Output quality',    pipLabel: 'OUTPUT', state: outputState,  detail: truncate(outputDetail, 60) },
   ];
   const count = cells.filter((c) => c.state !== 'green').length;
   return { count, cells, errors };

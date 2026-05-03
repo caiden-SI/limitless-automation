@@ -139,15 +139,23 @@ $$;
 --    that pollute MIN(created_at), which would defeat the cron-rule's
 --    "cron has never been due during this system's lifetime" exit.
 --    If a future cutover happens, update the floor here.
---  - edited_video_count + lufs_errors_24h gate the audio-normalization
---    pulse cell — if no EDITED video has ever existed, the LUFS check
---    has never been exercised and the cell stays green.
+--  - edited_video_count gates the output-quality pulse cell — if no
+--    EDITED video has ever existed, no QA check has run and the cell
+--    stays green by definition.
+--  - qa_errors_24h replaces the narrower lufs_errors_24h as the gating
+--    metric for the output-quality cell. The cell's coverage was widened
+--    from "audio normalization" (LUFS-only) to all QA failures (caption
+--    formatting, brand-term spell check, stutter/filler detection,
+--    LUFS audio).
+--  - lufs_errors_24h kept in the return shape for backward compatibility;
+--    the dashboard frontend stops reading it but a future dedicated audio
+--    panel could surface it independently.
 --  - ffmpeg_boot_check_status and last_lufs_measurement remain in the
 --    table for backward compat; the new code stops reading them.
 --
--- DROP FUNCTION required because three fields are added to the return
--- shape. CREATE OR REPLACE FUNCTION cannot change a function's return
--- type / output columns.
+-- DROP FUNCTION required because the return shape is changing
+-- (added qa_errors_24h on 2026-05-04). CREATE OR REPLACE FUNCTION
+-- cannot change a function's return type / output columns.
 DROP FUNCTION IF EXISTS get_campus_system_health_summary(uuid);
 CREATE OR REPLACE FUNCTION get_campus_system_health_summary(p_campus_id uuid)
 RETURNS TABLE (
@@ -161,7 +169,8 @@ RETURNS TABLE (
   last_webhook_received_at timestamptz,
   system_uptime timestamptz,
   edited_video_count bigint,
-  lufs_errors_24h integer
+  lufs_errors_24h integer,
+  qa_errors_24h integer
 )
 LANGUAGE sql SECURITY DEFINER STABLE
 AS $$
@@ -195,6 +204,11 @@ AS $$
        WHERE campus_id = p_campus_id
          AND agent_name = 'qa'
          AND action ILIKE '%lufs%'
+         AND status = 'error'
+         AND created_at > NOW() - INTERVAL '24 hours')::integer,
+    (SELECT COUNT(*) FROM agent_logs
+       WHERE campus_id = p_campus_id
+         AND agent_name = 'qa'
          AND status = 'error'
          AND created_at > NOW() - INTERVAL '24 hours')::integer;
 $$;
