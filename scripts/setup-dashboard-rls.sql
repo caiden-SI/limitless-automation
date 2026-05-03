@@ -93,6 +93,11 @@ CREATE UNIQUE INDEX IF NOT EXISTS research_library_campus_url
 --
 -- latest_failed_error_message added 2026-05-03 for the scoring-fix spec's
 -- webhook-fail action item detail line.
+--
+-- DROP FUNCTION required because the return-table shape changed
+-- (added latest_failed_error_message). PostgreSQL's CREATE OR REPLACE
+-- FUNCTION cannot change a function's return type / output columns.
+DROP FUNCTION IF EXISTS get_campus_webhook_inbox_status(uuid);
 CREATE OR REPLACE FUNCTION get_campus_webhook_inbox_status(p_campus_id uuid)
 RETURNS TABLE (
   total bigint,
@@ -128,14 +133,22 @@ $$;
 --  - last_*_run drops the `status = 'success'` filter. The dashboard
 --    separates "did it fire" from "did it succeed"; an erroring cron
 --    still fired and surfaces in the error-spike action item.
---  - system_uptime is the earliest agent_logs row for this campus, so
---    the cron-rule decision table can recognise crons that have never
---    been due during this system's lifetime.
+--  - system_uptime is the earliest post-cutover agent_logs row for this
+--    campus, floored at the Mac Mini deployment date (2026-04-29). The
+--    floor is essential — agent_logs contains pre-cutover Win11 entries
+--    that pollute MIN(created_at), which would defeat the cron-rule's
+--    "cron has never been due during this system's lifetime" exit.
+--    If a future cutover happens, update the floor here.
 --  - edited_video_count + lufs_errors_24h gate the audio-normalization
 --    pulse cell — if no EDITED video has ever existed, the LUFS check
 --    has never been exercised and the cell stays green.
 --  - ffmpeg_boot_check_status and last_lufs_measurement remain in the
 --    table for backward compat; the new code stops reading them.
+--
+-- DROP FUNCTION required because three fields are added to the return
+-- shape. CREATE OR REPLACE FUNCTION cannot change a function's return
+-- type / output columns.
+DROP FUNCTION IF EXISTS get_campus_system_health_summary(uuid);
 CREATE OR REPLACE FUNCTION get_campus_system_health_summary(p_campus_id uuid)
 RETURNS TABLE (
   last_research_run timestamptz,
@@ -170,8 +183,12 @@ AS $$
        WHERE campus_id = p_campus_id AND status = 'error'
          AND created_at > NOW() - INTERVAL '1 hour')::bigint,
     (SELECT MAX(received_at) FROM webhook_inbox),
-    (SELECT MIN(created_at) FROM agent_logs
-       WHERE campus_id = p_campus_id),
+    GREATEST(
+      (SELECT MIN(created_at) FROM agent_logs
+         WHERE campus_id = p_campus_id
+           AND created_at > '2026-04-29'::timestamptz),
+      '2026-04-29'::timestamptz
+    ),
     (SELECT COUNT(*) FROM videos
        WHERE campus_id = p_campus_id AND status = 'EDITED')::bigint,
     (SELECT COUNT(*) FROM agent_logs
