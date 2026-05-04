@@ -1823,3 +1823,67 @@ The April 5 "RUNNING APP" task was sitting at `ready for shooting` with no Dropb
 ### Status
 
 Mac Mini is the production host. Win11 is permanently retired.
+
+---
+
+## Session 21 — May 4, 2026
+
+Closed the loop on the performance-tracker integration started in commit 60d68f8 (`lib/google.js`, `scripts/sync-performance-tracker.js`, `scripts/migrations/2026-05-04-videos-post-url.sql`). The migration was already applied. The dry run reported 126 unmatched post URLs across 9 students — every one of them missing because `videos.post_url` was empty for every pre-pipeline post (none had been processed through ClickUp). This session built the backfill, ran it end to end, fixed one tracker-data robustness gap in the sync, and verified the full performance pipeline produces a real signal.
+
+### Built — `scripts/backfill-post-urls.js`
+
+Standalone backfill that reads `scripts/unmatched-urls.txt` (the list dumped at the bottom of a sync dry run) and inserts one `videos` row per URL with `post_url` set so the next sync resolves.
+
+Per-row logic:
+
+- **Parse** the space-padded `"  StudentName   platform   url"` lines via `split(/\s{2,}/)` — handles internal single-space names (`Alpha High`, `Alex Mathews`) cleanly.
+- **Canonicalize** the URL with the same rule the sync uses (`new URL`, drop `search`/`hash`, lowercase host, strip trailing slash) so both sides hash to the same key.
+- **Match** student by name against `students` for the Austin campus. `student_id = null` is accepted — `Alpha High` is a brand account, and the other 7 student names (Jackson Price, Cruce Sanders, Reuben Runacres, Maddie Price, Geetesh Parelly, Stella Grams, Austin Way) simply weren't seeded yet. Only Alex Mathews matched. Loud warning log lists every unmatched name so the seeding gap is visible.
+- **Title placeholder** = `"{handle} - {Platform}"`. Handle is extracted from the URL: `@<handle>` for TikTok, `<handle>/status` for X, post slug for Instagram (`/reel/<id>` or `/p/<id>`), video id for YouTube. Falls back to a slugified student name. Platform display is title-cased via a small map.
+- **Status** = `dbStatus('posted by client')` → `'POSTED BY CLIENT'`. Mirrors `agents/pipeline.js` line 22.
+- **Idempotency** is in-app: pre-loads existing canonical `post_url`s for the campus into a Set and skips matches. The migration's `videos_post_url_idx` is a non-unique partial index (a unique partial would be needed for a true ON CONFLICT upsert), and the pre-query pattern is the right shape for backfill — re-running never duplicates rows AND never overwrites a more authoritative title that might have been set by the pipeline since.
+
+Inserts in chunks of 100. Logs `backfill_complete` with `inserted / skippedExisting / skippedParse / errors / matchedStudents / unmatchedStudents`.
+
+### Run results
+
+- 126 lines parsed, 126 rows prepared, 126 inserted, 0 skipped, 0 errors.
+- 1 student matched (Alex Mathews); 8 student names landed with `student_id = null` as expected.
+- `agent_logs` row written.
+
+### Patch — `scripts/sync-performance-tracker.js` resilience to duplicate weekly headers
+
+Re-ran the sync without `--dry-run`. 8/9 tabs landed cleanly (1566 rows), but the Reuben Runacres tab failed:
+
+```
+performance upsert failed: ON CONFLICT DO UPDATE command cannot affect row a second time
+```
+
+Cause: the tab's header row has `"4/16-4/23"` twice (columns 13 and 14). Both columns parse to the same `week_of`, so the upsert chunk contained two rows with the same `(video_id, platform, week_of)` conflict key — Postgres rejects that in a single statement.
+
+Fix: dedupe the upserts array by the conflict key right before chunking, last write wins. Equal snapshots collapse to one (observed in this case), and even when divergent, the rightmost column is the most recently filled. New `result.collapsedDupKeys` field tracks the count for visibility but doesn't surface in normal logging — sync stays quiet on the happy path.
+
+After the patch: 9/9 tabs landed, 1579 rows written, 0 unmatched.
+
+### Verified — Performance Agent end-to-end
+
+Manually triggered `agents/performance.runAll()`. Real Claude analysis over the 1579 weekly rows produced one `performance_signals` row for `week_of=2026-05-04`:
+
+- **summary**: "TikTok is dramatically outperforming other platforms with 5x higher average views, driven primarily by AI/tech content and branded partnerships. Instagram is severely underperforming and needs strategic refocus..."
+- **top_hooks** / **top_formats** / **top_topics** populated with view-count-weighted patterns (talking-head 25k avg; AI/Tech 734k avg; branded-content 45k avg).
+- **raw_output** preserves `recommendations` and `underperforming_patterns` (the table doesn't have dedicated columns for those today; they live inside `raw_output`).
+
+This is the first signal generated against real tracker data. Treat the specific recommendations as illustrative — the volume of underlying rows (1579) is well above the threshold below which Claude hedges, but the diagnosis is one weekly snapshot, not a calibration baseline.
+
+### Files changed
+
+- `scripts/backfill-post-urls.js` (new, 232 lines)
+- `scripts/sync-performance-tracker.js` (+17 / -3 — dedup before chunking)
+- `docs/progress-log.md` (this entry)
+
+### What's Next
+
+1. **Seed the missing 7 students.** Backfill landed those rows with `student_id = null`. As-is, the dashboard's per-student rollups won't surface their videos. Add them to `students` (campus_id = Austin), then run a one-shot UPDATE to populate `student_id` on the existing backfilled `videos` rows by `student_name` match.
+2. **Add `recommendations` and `underperforming_patterns` columns to `performance_signals`** (or accept that they live inside `raw_output` indefinitely). The dashboard currently can't render them as first-class fields.
+3. **Move `videos.post_url` into the live pipeline.** Today, the only path to populating `post_url` is this backfill. The pipeline should set it when a status flips to `posted by client` (likely from a ClickUp custom field). Until then, every newly posted video reappears in the next sync's unmatched list.
+4. **Consider a unique partial index on `(campus_id, post_url) WHERE post_url IS NOT NULL`** if the pipeline writes post_urls — it would convert the backfill's pre-query pattern into a true ON CONFLICT upsert and remove a small race window if two callers ever raced to set the same URL.

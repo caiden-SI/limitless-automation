@@ -241,8 +241,22 @@ async function syncTab({ tabName, sheetId, year, campusId, videoIndex, dryRun })
 
   if (upserts.length === 0) return result;
 
+  // Dedupe by the conflict key. The tracker occasionally repeats a weekly
+  // header (observed: Reuben Runacres tab has "4/16-4/23" twice), which
+  // would otherwise produce two upserts with the same (video_id, platform,
+  // week_of) in one statement and trip Postgres's "ON CONFLICT DO UPDATE
+  // command cannot affect row a second time" error. Last write wins —
+  // duplicated columns hold equal snapshots in observed data, and even
+  // when they diverge, the rightmost column is the most recently filled.
+  const deduped = new Map();
+  for (const u of upserts) {
+    deduped.set(`${u.video_id}|${u.platform}|${u.week_of}`, u);
+  }
+  const finalUpserts = [...deduped.values()];
+  result.collapsedDupKeys = upserts.length - finalUpserts.length;
+
   if (dryRun) {
-    result.written = upserts.length;
+    result.written = finalUpserts.length;
     return result;
   }
 
@@ -250,8 +264,8 @@ async function syncTab({ tabName, sheetId, year, campusId, videoIndex, dryRun })
   // but we keep chunks small so a single tab failure doesn't lose progress
   // from earlier chunks in the same tab.
   const CHUNK = 500;
-  for (let i = 0; i < upserts.length; i += CHUNK) {
-    const chunk = upserts.slice(i, i + CHUNK);
+  for (let i = 0; i < finalUpserts.length; i += CHUNK) {
+    const chunk = finalUpserts.slice(i, i + CHUNK);
     const { error } = await supabase
       .from('performance')
       .upsert(chunk, { onConflict: 'video_id,platform,week_of' });
