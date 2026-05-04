@@ -1992,4 +1992,65 @@ The spec explicitly notes the cumulative-vs-delta arithmetic correction and the 
 3. **Add `recommendations` and `underperforming_patterns` columns to `performance_signals`** (carried forward from Session 21).
 4. **Consider a unique partial index on `(campus_id, post_url) WHERE post_url IS NOT NULL`** (carried forward).
 
+---
+
+## Session 24 — May 4, 2026
+
+Populated `students.handle_tiktok` / `handle_instagram` for the 8 active Austin creators so the Profile Views Agent (when built) has handles to scrape on Thursday. Also reshaped `scripts/seed-students.js` from a one-shot inserter into an idempotent reconciler.
+
+### Handle source
+
+Pulled from the Content Performance Tracker's per-student tabs (TikTok URLs expose `@<handle>`; X URLs expose `<handle>` between `/` and `/status`). Instagram URLs in the tracker are anonymous `/p/<slug>` or `/reel/<slug>` and don't carry the handle, so those were filled from values Caiden provided directly.
+
+| Student | TikTok | Instagram | Source |
+|---|---|---|---|
+| Alex Mathews | `berryaiplushies` | `berryaiplushies` | Tracker URLs |
+| Jackson Price | `llimepcrepair1` | `llimecrepair` | Tracker (TikTok), Caiden (IG) |
+| Cruce Sanders | `cruce.saunders` | `cruce_sanders` | Tracker (TikTok), Caiden (IG) |
+| Reuben Runacres | — | `reubenrunacres` | Caiden |
+| Maddie Price | `355themusical` | `355themusical` | Tracker (TikTok), Caiden (IG) |
+| Geetesh Parelly | — | `geetesh.flowly` | Caiden |
+| Stella Grams | `stella_makes_bank` | `stellamakesbank` | Tracker (TikTok), Caiden (IG) |
+| Austin Way | — | `austinway` | **Unconfirmed** — Caiden's proposed value; tracker has only an anonymous `/p/<slug>` post link, so the handle isn't visible there. If wrong, the future Profile Views Agent will scrape an empty profile for Austin Way's IG and skip; no destructive consequence. Operator can correct via a one-line UPDATE. |
+| Alpha High (brand) | `alphahigh.school` | `alphahigh.school` | Session 23 (already set) |
+
+### `seed-students.js` reshape
+
+Was: insert-only, skip-on-exists. Now: idempotent reconciler.
+
+- **Insert** if no row with that name exists in the campus.
+- **Fill** any `FILLABLE_FIELDS` (`handle_tiktok`, `handle_instagram`, `handle_youtube`, `is_brand_account`) on an existing row where the live value is `NULL` and the seed has a value.
+- **Skip with WARN** on field-level conflict (live value is non-null AND differs from the seed). The operator decides — automatic overwrite is the wrong default for fields a student may have updated themselves through onboarding.
+- **No-op** on perfect match.
+
+This means `STUDENTS` in the script becomes the single source of truth for the static parts of student rows. Re-running is safe forever.
+
+Run results this session: `inserted=0`, `filled=8` (Alex + the 7 humans), `no-change=1` (Alpha High), `conflicts=0`. The video-linking pass found 0 new rows to link (everything was already linked in Sessions 22 / 23), confirming idempotency.
+
+### Files changed
+
+- `scripts/seed-students.js` (+62 / -19 — fill-don't-overwrite, conflict warning, FILLABLE_FIELDS list, handles in STUDENTS)
+- `docs/progress-log.md` (this entry)
+
+### Branch published
+
+After this session's commit, `feature/dashboard-scoring-fix` was pushed to origin and merged into `main`. Branch carried Sessions 21–24:
+
+- Session 21 — backfill 126 pre-pipeline post URLs + sync-tracker dedupe-before-upsert defense
+- Session 22 — seed 7 humans + pipeline writes `post_url` on `posted by client`
+- Session 23 — `students.is_brand_account` schema + Alpha High brand row + `workflows/profile-views.md` SOP
+- Session 24 — handles populated, seed-students.js reshaped to idempotent reconciler
+
+The merge into main is the deliverable handoff for the production Mac Mini's pull-and-restart loop.
+
+### What's Next
+
+Carried forward (unchanged from Session 23):
+
+1. **Build the Profile Views Agent** per `workflows/profile-views.md`. Dependencies — handles, post_url backfill, unique constraint, scraper — are all live now.
+2. **Confirm `austinway` Instagram handle** out-of-band (a 30-second visit to `instagram.com/austinway`). If wrong, one UPDATE fixes it.
+3. **Add `recommendations` and `underperforming_patterns` columns to `performance_signals`** (Session 21 carry).
+4. **Consider a unique partial index on `(campus_id, post_url) WHERE post_url IS NOT NULL`** (Session 22 carry).
+
+
 
