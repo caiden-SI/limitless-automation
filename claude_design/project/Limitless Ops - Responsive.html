@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=1600, initial-scale=1" />
+  <title>Limitless Ops Dashboard — Responsive (3 viewports)</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,500;1,400;1,500&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <style>
+    html, body, #root { margin: 0; padding: 0; height: 100%; }
+    body { background: #f0eee9; font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", system-ui, sans-serif; }
+    * { box-sizing: border-box; }
+
+    /* ─────────── Footer toolbar (Theme · Background · Monospaced) ─────────── */
+    .lim-toolbar {
+      position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%);
+      z-index: 50;
+      display: flex; align-items: center; gap: 6px;
+      padding: 6px;
+      background: rgba(255,255,255,0.78);
+      backdrop-filter: saturate(140%) blur(14px);
+      -webkit-backdrop-filter: saturate(140%) blur(14px);
+      border: 1px solid rgba(0,0,0,0.08);
+      border-radius: 999px;
+      box-shadow: 0 1px 0 rgba(255,255,255,0.6) inset, 0 8px 28px rgba(0,0,0,0.10);
+      font: 12px/1.2 -apple-system, BlinkMacSystemFont, "Inter", system-ui, sans-serif;
+      color: #1a1a1a;
+    }
+    .lim-tb-group { display: flex; align-items: center; gap: 0; }
+    .lim-tb-label {
+      font-size: 10.5px; letter-spacing: 0.06em; text-transform: uppercase;
+      color: rgba(0,0,0,0.55); padding: 0 8px 0 10px;
+    }
+    .lim-tb-seg {
+      display: inline-flex; padding: 2px;
+      background: rgba(0,0,0,0.05); border-radius: 999px;
+    }
+    .lim-tb-seg button {
+      appearance: none; border: 0; background: transparent;
+      padding: 5px 11px;
+      border-radius: 999px;
+      font: inherit; color: rgba(0,0,0,0.65);
+      cursor: pointer; transition: background 0.15s, color 0.15s;
+    }
+    .lim-tb-seg button[aria-pressed="true"] {
+      background: #1a1a1a; color: #fff;
+      box-shadow: 0 1px 2px rgba(0,0,0,0.2);
+    }
+    .lim-tb-divider {
+      width: 1px; align-self: stretch; margin: 4px 2px;
+      background: rgba(0,0,0,0.08);
+    }
+  </style>
+
+  <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/three@0.160.0/build/three.min.js" crossorigin="anonymous"></script>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel" src="data.jsx"></script>
+  <script type="text/babel" src="core.jsx"></script>
+  <script type="text/babel" src="dir-c.jsx"></script>
+  <script type="text/babel" src="dir-c-responsive.jsx"></script>
+  <script type="text/babel" src="design-canvas.jsx"></script>
+  <script type="text/babel" src="tweaks-panel.jsx"></script>
+
+  <script type="text/babel">
+    const { useState, useEffect } = React;
+
+    const DEFAULTS = /*EDITMODE-BEGIN*/{
+      "scenario": "calm",
+      "accentHue": 148,
+      "density": "comfortable",
+      "stuckStyle": "pulse",
+      "pipelineMode": "compressed"
+    }/*EDITMODE-END*/;
+
+    // ─────────── Header toggles — synced to localStorage ───────────
+    // Per the brief, mono toggles font-family + background pixelation in lockstep.
+    // Theme + Background also live up here as global toggles.
+    const LS = {
+      mono:  'limitless.mono',   // 'on' | 'off'
+      theme: 'limitless.theme',  // 'light' | 'dark'
+      bg:    'limitless.bg',     // 'on' | 'off'
+      alpha: 'limitless.alpha',  // '0' .. '100' (panel transparency, lower = more transparent)
+    };
+    function readLS(key, fallback) {
+      try { const v = localStorage.getItem(key); return v == null ? fallback : v; }
+      catch { return fallback; }
+    }
+    function writeLS(key, value) { try { localStorage.setItem(key, value); } catch {} }
+
+    function Toolbar({ theme, setTheme, bg, setBg, mono, setMono }) {
+      const Seg = ({ label, value, set, options }) => (
+        <div className="lim-tb-group">
+          <span className="lim-tb-label">{label}</span>
+          <div className="lim-tb-seg" role="group" aria-label={label}>
+            {options.map((o) => (
+              <button key={o.value}
+                aria-pressed={value === o.value}
+                onClick={() => set(o.value)}>
+                {o.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      );
+      return (
+        <div className="lim-toolbar" role="toolbar" aria-label="Display options">
+          <Seg label="Theme" value={theme} set={setTheme}
+            options={[{ value: 'light', label: 'Light' }, { value: 'dark', label: 'Dark' }]} />
+          <span className="lim-tb-divider" />
+          <Seg label="Background" value={bg} set={setBg}
+            options={[{ value: 'off', label: 'Off' }, { value: 'on', label: 'Grain' }]} />
+          <span className="lim-tb-divider" />
+          <Seg label="Monospaced" value={mono} set={setMono}
+            options={[{ value: 'off', label: 'Off' }, { value: 'on', label: 'On' }]} />
+        </div>
+      );
+    }
+
+    function App() {
+      const [t, setT] = useTweaks(DEFAULTS);
+
+      // Hydrate header toggles synchronously from localStorage on first render
+      // (useState initializer runs before paint → no flash).
+      const [mono,  setMonoRaw]  = useState(() => readLS(LS.mono,  'off'));
+      const [theme, setThemeRaw] = useState(() => readLS(LS.theme, 'dark'));
+      const [bg,    setBgRaw]    = useState(() => readLS(LS.bg,    'off'));
+      const [alpha, setAlphaRaw] = useState(() => parseInt(readLS(LS.alpha, '65'), 10));
+
+      const setMono  = (v) => { setMonoRaw(v);  writeLS(LS.mono,  v); };
+      const setTheme = (v) => { setThemeRaw(v); writeLS(LS.theme, v); };
+      const setBg    = (v) => { setBgRaw(v);    writeLS(LS.bg,    v); };
+      const setAlpha = (v) => { const n = Math.max(0, Math.min(100, parseInt(v, 10) || 0)); setAlphaRaw(n); writeLS(LS.alpha, String(n)); };
+
+      const accent = `oklch(0.62 0.16 ${t.accentHue})`;
+      const isMono = mono === 'on';
+      const grainOn = bg === 'on';
+
+      const baseProps = {
+        scenario: t.scenario,
+        accent,
+        density: t.density,
+        stuckStyle: t.stuckStyle,
+        pipelineMode: t.pipelineMode,
+        grainOn,
+        mono: isMono,
+        theme,
+        // In-app toolbar plumbing — each viewport renders its own toolbar inside
+        bg,
+        setBg,
+        setMono,
+        setTheme,
+        alpha,
+        setAlpha,
+      };
+
+      // Three target viewports per the brief:
+      //  Studio Display (vertical, always-on wall)  1440 x 2560
+      //  MacBook Air (Scott's daily)                1440 x  932
+      //  iPhone (on-the-go status check)             430 x  932
+      const STUDIO = { w: 1440, h: 2560 };
+      const LAPTOP = { w: 1440, h: 932 };
+      const PHONE  = { w: 430,  h: 932 };
+
+      const themeLabel = theme === 'dark' ? 'Dark' : 'Light';
+
+      return (
+        <>
+          <DesignCanvas>
+            <DCSection
+              id="c"
+              title="Limitless Ops — three viewports"
+              subtitle="Studio Display = agent grid + upcoming shoots up top, then full kanban. Laptop = same priorities reflowed for desktop with a compact 11-column pipeline summary. Phone = full vertical scroll, no tabs.">
+              <DCArtboard id="c-studio" label={`Studio Display · ${themeLabel} · 1440×2560`} width={STUDIO.w} height={STUDIO.h}>
+                <window.DirCPortrait {...baseProps} />
+              </DCArtboard>
+              <DCArtboard id="c-laptop" label={`MacBook Air · ${themeLabel} · 1440×932`} width={LAPTOP.w} height={LAPTOP.h}>
+                <window.DirCLaptop {...baseProps} />
+              </DCArtboard>
+              <DCArtboard id="c-phone" label={`iPhone · ${themeLabel} · 430×932`} width={PHONE.w} height={PHONE.h}>
+                <window.DirCMobile {...baseProps} />
+              </DCArtboard>
+            </DCSection>
+          </DesignCanvas>
+
+          <TweaksPanel title="Tweaks">
+            <TweakSection title="Scenario">
+              <TweakSelect label="Demo state" value={t.scenario} onChange={(v) => setT('scenario', v)}
+                options={[
+                  { value: 'calm', label: 'Calm / healthy' },
+                  { value: 'busy', label: '9 AM scenario' },
+                  { value: 'worst', label: 'Worst case' },
+                ]} />
+              <TweakRadio label="Density" value={t.density} onChange={(v) => setT('density', v)}
+                options={[{ value: 'comfortable', label: 'Comfortable' }, { value: 'compact', label: 'Compact' }]} />
+            </TweakSection>
+
+            <TweakSection title="Pipeline (laptop)">
+              <TweakSelect label="Layout" value={t.pipelineMode} onChange={(v) => setT('pipelineMode', v)}
+                options={[
+                  { value: 'compressed', label: 'Compressed lanes' },
+                  { value: 'kanban', label: 'Kanban (11 cols)' },
+                  { value: 'list', label: 'List by status' },
+                ]} />
+              <TweakRadio label="Stuck indicator" value={t.stuckStyle} onChange={(v) => setT('stuckStyle', v)}
+                options={[
+                  { value: 'hg', label: '⧗ days' },
+                  { value: 'pulse', label: '● pulse' },
+                  { value: 'stripe', label: '▦ stripe' },
+                ]} />
+            </TweakSection>
+
+            <TweakSection title="Style">
+              <TweakSlider label="Accent hue" min={0} max={360} step={1} value={t.accentHue} onChange={(v) => setT('accentHue', v)} />
+            </TweakSection>
+          </TweaksPanel>
+        </>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+</body>
+</html>

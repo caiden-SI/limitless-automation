@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=1600, initial-scale=1" />
+  <title>Limitless Ops Dashboard — Three Directions</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,500;1,400;1,500&family=JetBrains+Mono:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <style>
+    html, body, #root { margin: 0; padding: 0; height: 100%; }
+    body { background: #f0eee9; font-family: "JetBrains Mono", ui-monospace, monospace; }
+    * { box-sizing: border-box; }
+  </style>
+
+  <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel" src="data.jsx"></script>
+  <script type="text/babel" src="core.jsx"></script>
+  <script type="text/babel" src="dir-a.jsx"></script>
+  <script type="text/babel" src="dir-b.jsx"></script>
+  <script type="text/babel" src="dir-c.jsx"></script>
+  <script type="text/babel" src="design-canvas.jsx"></script>
+  <script type="text/babel" src="tweaks-panel.jsx"></script>
+
+  <script type="text/babel">
+    const { useState, useEffect } = React;
+
+    const DEFAULTS = /*EDITMODE-BEGIN*/{
+      "scenario": "calm",
+      "accentHue": 272,
+      "density": "compact",
+      "stuckStyle": "pulse",
+      "pipelineMode": "kanban",
+      "grainOn": false,
+      "grainIntensity": 0.25
+    }/*EDITMODE-END*/;
+
+    function App() {
+      const [t, setT] = useTweaks(DEFAULTS);
+      const accent = `oklch(0.62 0.16 ${t.accentHue})`;
+
+      const baseProps = {
+        scenario: t.scenario,
+        accent,
+        density: t.density,
+        stuckStyle: t.stuckStyle,
+        pipelineMode: t.pipelineMode,
+        grain: t.grainIntensity,
+        grainOn: t.grainOn,
+      };
+
+      // Each direction is rendered twice: light + dark.
+      // Artboard size: 1280×900 — fits 9 AM scenario with header + sidebar
+      // visible without scroll.
+      const W = 1280, H = 900;
+
+      return (
+        <>
+          <DesignCanvas>
+            <DCSection id="a" title="A · Editorial" subtitle="Mono + serif italic. Generous whitespace, soft grain. p5aholic-leaning.">
+              <DCArtboard id="a-light" label="Light" width={W} height={H}>
+                <DirA {...baseProps} theme="light" />
+              </DCArtboard>
+              <DCArtboard id="a-dark" label="Dark" width={W} height={H}>
+                <DirA {...baseProps} theme="dark" />
+              </DCArtboard>
+            </DCSection>
+
+            <DCSection id="b" title="B · Terminal" subtitle="Mono-only. ASCII chrome, hard rectangles, TUI rhythm.">
+              <DCArtboard id="b-light" label="Light" width={W} height={H}>
+                <DirB {...baseProps} theme="light" />
+              </DCArtboard>
+              <DCArtboard id="b-dark" label="Dark" width={W} height={H}>
+                <DirB {...baseProps} theme="dark" />
+              </DCArtboard>
+            </DCSection>
+
+            <DCSection id="c" title="C · Wall-monitor" subtitle="Giant numbers, glance from across the room. Hi-contrast, assertive when red.">
+              <DCArtboard id="c-light" label="Light" width={W} height={H}>
+                <DirC {...baseProps} theme="light" />
+              </DCArtboard>
+              <DCArtboard id="c-dark" label="Dark" width={W} height={H}>
+                <DirC {...baseProps} theme="dark" />
+              </DCArtboard>
+            </DCSection>
+          </DesignCanvas>
+
+          <TweaksPanel title="Tweaks">
+            <TweakSection title="Scenario">
+              <TweakSelect label="Demo state" value={t.scenario} onChange={(v) => setT('scenario', v)}
+                options={[
+                  { value: 'calm', label: 'Calm / healthy' },
+                  { value: 'busy', label: '9 AM scenario' },
+                  { value: 'worst', label: 'Worst case' },
+                ]} />
+              <TweakRadio label="Density" value={t.density} onChange={(v) => setT('density', v)}
+                options={[{ value: 'comfortable', label: 'Comfortable' }, { value: 'compact', label: 'Compact' }]} />
+            </TweakSection>
+
+            <TweakSection title="Pipeline">
+              <TweakSelect label="Layout" value={t.pipelineMode} onChange={(v) => setT('pipelineMode', v)}
+                options={[
+                  { value: 'compressed', label: 'Compressed lanes' },
+                  { value: 'kanban', label: 'Kanban (11 cols)' },
+                  { value: 'list', label: 'List by status' },
+                ]} />
+              <TweakRadio label="Stuck indicator" value={t.stuckStyle} onChange={(v) => setT('stuckStyle', v)}
+                options={[
+                  { value: 'hg', label: '⧗ days' },
+                  { value: 'pulse', label: '● pulse' },
+                  { value: 'stripe', label: '▦ stripe' },
+                ]} />
+            </TweakSection>
+
+            <TweakSection title="Style">
+              <TweakSlider label="Accent hue" min={0} max={360} step={1} value={t.accentHue} onChange={(v) => setT('accentHue', v)} />
+              <TweakToggle label="Grain background" value={t.grainOn} onChange={(v) => setT('grainOn', v)} />
+              <TweakSlider label="Grain intensity" min={0.02} max={0.3} step={0.01} value={t.grainIntensity} onChange={(v) => setT('grainIntensity', v)} />
+            </TweakSection>
+          </TweaksPanel>
+        </>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+</body>
+</html>

@@ -286,3 +286,16 @@ Add a note on the final screen: "To create this student's Claude Project: go to 
 - [ ] Verify error handling and recovery paths
 - [ ] Review with Scott — walkthrough of full pipeline
 - [ ] Handoff: transfer GitHub repo to Limitless per SOW Section 3
+
+---
+
+## Post-Cutover Follow-ups
+
+### Dashboard remote access via Tailscale
+- [ ] After Mac Mini cutover: enable phone access to the dashboard for Scott via Tailscale (no public hosting, no auth layer needed)
+  - Install Tailscale on the Mac Mini (`brew install --cask tailscale`)
+  - Install Tailscale on Scott's phone, invite him to the tailnet
+  - Change dashboard server bind from `127.0.0.1` to `0.0.0.0` so it's reachable on the tailnet IP
+  - Scott bookmarks `http://<mac-mini-name>.<tailnet>.ts.net:<port>` on his phone
+  - Confirms the SECURITY DEFINER + RLS-on-helper-functions decision in `decisions.md` stays valid (dashboard remains non-public)
+  - Lighter alternative to the proposed Vercel-plus-Supabase-Auth-plus-subdomain hosting; revisit only if Scott needs a true public status URL on the Limitless domain
