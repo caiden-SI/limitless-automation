@@ -1,5 +1,6 @@
-// PM2 ecosystem config — manages the webhook server with auto-restart on
-// crash, plus the per-minute health-ping agent (Phase A monitoring).
+// PM2 ecosystem config — manages the webhook server, the dashboard static
+// server, and the per-minute health-ping agent (Phase A monitoring), all
+// with auto-restart on crash.
 // Usage: pm2 start ecosystem.config.js
 // Runs on Mac Mini (always-on). All credentials loaded from .env via dotenv.
 module.exports = {
@@ -26,6 +27,33 @@ module.exports = {
       // Logging — PM2 handles rotation, timestamps prepended
       error_file: './logs/pm2-error.log',
       out_file: './logs/pm2-out.log',
+      merge_logs: true,
+      time: true,
+      log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
+    },
+    {
+      // Static file server for the React dashboard built into dashboard/dist.
+      // Reachable over Tailscale by limitlessyt.com tailnet members.
+      // The -s flag enables SPA mode (rewrites unmatched routes to index.html
+      // so React Router client-side routes like /onboard work on refresh).
+      // Binds to 0.0.0.0 so Tailscale-connected devices (phones, laptops)
+      // can reach it, not just localhost.
+      name: 'limitless-dashboard',
+      script: 'node_modules/serve/build/main.js',
+      args: '-s dashboard/dist -l tcp://0.0.0.0:5173',
+      instances: 1,
+      watch: false,
+      autorestart: true,
+      max_restarts: 10,
+      min_uptime: '10s',
+      restart_delay: 5000,
+
+      // Static file server needs almost no memory
+      max_memory_restart: '256M',
+
+      // Separate logs so dashboard noise doesn't pollute webhook logs
+      error_file: './logs/dashboard-error.log',
+      out_file: './logs/dashboard-out.log',
       merge_logs: true,
       time: true,
       log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
