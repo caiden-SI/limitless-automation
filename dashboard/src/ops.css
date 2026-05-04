@@ -787,7 +787,10 @@
 
 /* Every major content surface frosts its own area. Backgrounds come
  * from var(--bg-2) (alpha-aware in glass mode) plus the per-cell color
- * modifiers (e.g. .lim-cpv-hero--amber tints --bg-2 with amber). */
+ * modifiers (e.g. .lim-cpv-hero--amber tints --bg-2 with amber).
+ * --glass-blur is alpha-aware too: when the opacity dial drops below
+ * ~10%, it falls back to "none" so cards disappear cleanly instead of
+ * leaving a faint blurred outline. */
 [data-glass='on'] .lim-cpv-hero,
 [data-glass='on'] .lim-cpv-agent,
 [data-glass='on'] .lim-cpv-lane,
@@ -804,8 +807,8 @@
 [data-glass='on'] .lim-cpl-pipe-col,
 [data-glass='on'] .lim-c-log,
 [data-glass='on'] .lim-kpi {
-  backdrop-filter: blur(10px) saturate(140%);
-  -webkit-backdrop-filter: blur(10px) saturate(140%);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
 }
 
 /* Borders re-establish each card's edge against the noisy grain. Inner

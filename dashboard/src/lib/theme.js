@@ -54,23 +54,29 @@ export function useDisplayPrefs() {
 // (when grain is on) swaps bg-2/bg-3 to alpha-aware rgba so the shader shows
 // through. Accent stays at hue 148 (the design's default — Tweaks panel hue
 // dial is dropped from production per project requirements).
+//
+// --glass-blur tracks the same alpha so the backdrop-filter switches off
+// when the dial is at the bottom (a < 0.1) — cards then truly disappear
+// instead of leaving a faint blurred frame.
 export function buildCssVars({ theme, bg, alpha }) {
   const dark  = theme === 'dark';
   const glass = bg === 'on';
   const a  = (typeof alpha === 'number') ? Math.max(0, Math.min(100, alpha)) / 100 : 0.65;
   const a2 = Math.min(1, a + 0.05);
+  const glassBlur = glass && a >= 0.1 ? 'blur(10px) saturate(140%)' : 'none';
   return {
-    '--bg':     dark ? '#0a0c0e' : '#f6f6f4',
-    '--bg-2':   glass ? (dark ? `rgba(20,20,24,${a})`  : `rgba(255,255,255,${a})`)  : (dark ? '#13161a' : '#ececea'),
-    '--bg-3':   glass ? (dark ? `rgba(28,32,38,${a2})` : `rgba(255,255,255,${a2})`) : (dark ? '#1c2026' : '#e2e2df'),
-    '--ink':    dark ? '#f5f5f2' : '#0a0c0e',
-    '--ink-2':  dark ? '#a8aaad' : '#54565a',
-    '--ink-3':  dark ? '#62656b' : '#9a9ca0',
-    '--rule':   dark ? '#262a30' : '#d8d8d4',
-    '--accent': 'oklch(0.62 0.16 148)',
-    '--green':  dark ? '#5cd18b' : '#1c8a3c',
-    '--amber':  dark ? '#f0b03a' : '#b8721a',
-    '--red':    dark ? '#ff5c4a' : '#cc2a18',
+    '--bg':         dark ? '#0a0c0e' : '#f6f6f4',
+    '--bg-2':       glass ? (dark ? `rgba(20,20,24,${a})`  : `rgba(255,255,255,${a})`)  : (dark ? '#13161a' : '#ececea'),
+    '--bg-3':       glass ? (dark ? `rgba(28,32,38,${a2})` : `rgba(255,255,255,${a2})`) : (dark ? '#1c2026' : '#e2e2df'),
+    '--ink':        dark ? '#f5f5f2' : '#0a0c0e',
+    '--ink-2':      dark ? '#a8aaad' : '#54565a',
+    '--ink-3':      dark ? '#62656b' : '#9a9ca0',
+    '--rule':       dark ? '#262a30' : '#d8d8d4',
+    '--accent':     'oklch(0.62 0.16 148)',
+    '--green':      dark ? '#5cd18b' : '#1c8a3c',
+    '--amber':      dark ? '#f0b03a' : '#b8721a',
+    '--red':        dark ? '#ff5c4a' : '#cc2a18',
+    '--glass-blur': glassBlur,
   };
 }
 

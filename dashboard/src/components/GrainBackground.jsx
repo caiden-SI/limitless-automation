@@ -234,13 +234,10 @@ export default function GrainBackground({
       transparent: true,
     });
 
-    // Fullscreen plane — covers the entire viewport so there's no blank strip.
-    // (p5aholic uses an off-center 3x3 plane at (-0.8, -0.5, 1), but that's
-    // tuned for his portfolio layout. For a fullscreen dashboard background
-    // we want full coverage.)
-    const geometry = new THREE.PlaneGeometry(2, 2);
+    // Match his geometry: 3x3 plane positioned at (-0.8, -0.5, 1)
+    const geometry = new THREE.PlaneGeometry(3, 3);
     const mesh = new THREE.Mesh(geometry, material);
-    mesh.position.set(0, 0, 1);
+    mesh.position.set(-0.8, -0.5, 1);
     scene.add(mesh);
 
     let frameId;
