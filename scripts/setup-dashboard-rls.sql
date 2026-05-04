@@ -153,9 +153,19 @@ $$;
 --  - ffmpeg_boot_check_status and last_lufs_measurement remain in the
 --    table for backward compat; the new code stops reading them.
 --
+-- Phase A monitoring (docs/dashboard-phase-a-spec.md, 2026-05-04):
+--  - 11 health-ping fields added: tunnel/pm2/ffmpeg/disk/memory pulses now
+--    derive from the per-minute scripts/health-ping.js agent on the Mac
+--    Mini. Each ping_X field reads the most recent matching agent_logs
+--    row in the last 5 minutes — if none exist, the field is NULL and the
+--    dashboard shows the cell as amber ("ping agent stale"). Stale is
+--    distinct from broken: green requires an active recent success.
+--  - tunnel_recent_failures counts ping_tunnel rows with status='error'
+--    in the last 5 min so the cell can go red after 3 consecutive misses.
+--
 -- DROP FUNCTION required because the return shape is changing
--- (added qa_errors_24h on 2026-05-04). CREATE OR REPLACE FUNCTION
--- cannot change a function's return type / output columns.
+-- (Phase A adds 11 fields). CREATE OR REPLACE FUNCTION cannot change a
+-- function's return type / output columns.
 DROP FUNCTION IF EXISTS get_campus_system_health_summary(uuid);
 CREATE OR REPLACE FUNCTION get_campus_system_health_summary(p_campus_id uuid)
 RETURNS TABLE (
@@ -170,7 +180,19 @@ RETURNS TABLE (
   system_uptime timestamptz,
   edited_video_count bigint,
   lufs_errors_24h integer,
-  qa_errors_24h integer
+  qa_errors_24h integer,
+  -- Phase A health-ping fields (driven by scripts/health-ping.js)
+  last_tunnel_ping_ok timestamptz,
+  tunnel_recent_failures integer,
+  tunnel_last_error text,
+  pm2_status text,
+  pm2_detail text,
+  ffmpeg_status text,
+  ffmpeg_detail text,
+  disk_status text,
+  disk_detail text,
+  memory_status text,
+  memory_detail text
 )
 LANGUAGE sql SECURITY DEFINER STABLE
 AS $$
@@ -210,7 +232,69 @@ AS $$
        WHERE campus_id = p_campus_id
          AND agent_name = 'qa'
          AND status = 'error'
-         AND created_at > NOW() - INTERVAL '24 hours')::integer;
+         AND created_at > NOW() - INTERVAL '24 hours')::integer,
+    -- last_tunnel_ping_ok
+    (SELECT MAX(created_at) FROM agent_logs
+       WHERE campus_id = p_campus_id AND agent_name = 'health'
+         AND action = 'ping_tunnel' AND status = 'success'),
+    -- tunnel_recent_failures
+    (SELECT COUNT(*) FROM agent_logs
+       WHERE campus_id = p_campus_id AND agent_name = 'health'
+         AND action = 'ping_tunnel' AND status = 'error'
+         AND created_at > NOW() - INTERVAL '5 minutes')::integer,
+    -- tunnel_last_error
+    (SELECT error_message FROM agent_logs
+       WHERE campus_id = p_campus_id AND agent_name = 'health'
+         AND action = 'ping_tunnel' AND status = 'error'
+       ORDER BY created_at DESC LIMIT 1),
+    -- pm2_status (NULL if no ping in last 5 min → dashboard shows amber)
+    (SELECT status FROM agent_logs
+       WHERE campus_id = p_campus_id AND agent_name = 'health'
+         AND action = 'ping_pm2'
+         AND created_at > NOW() - INTERVAL '5 minutes'
+       ORDER BY created_at DESC LIMIT 1),
+    -- pm2_detail
+    (SELECT error_message FROM agent_logs
+       WHERE campus_id = p_campus_id AND agent_name = 'health'
+         AND action = 'ping_pm2'
+         AND created_at > NOW() - INTERVAL '5 minutes'
+       ORDER BY created_at DESC LIMIT 1),
+    -- ffmpeg_status
+    (SELECT status FROM agent_logs
+       WHERE campus_id = p_campus_id AND agent_name = 'health'
+         AND action = 'ping_ffmpeg'
+         AND created_at > NOW() - INTERVAL '5 minutes'
+       ORDER BY created_at DESC LIMIT 1),
+    -- ffmpeg_detail
+    (SELECT error_message FROM agent_logs
+       WHERE campus_id = p_campus_id AND agent_name = 'health'
+         AND action = 'ping_ffmpeg'
+         AND created_at > NOW() - INTERVAL '5 minutes'
+       ORDER BY created_at DESC LIMIT 1),
+    -- disk_status
+    (SELECT status FROM agent_logs
+       WHERE campus_id = p_campus_id AND agent_name = 'health'
+         AND action = 'ping_disk'
+         AND created_at > NOW() - INTERVAL '5 minutes'
+       ORDER BY created_at DESC LIMIT 1),
+    -- disk_detail
+    (SELECT error_message FROM agent_logs
+       WHERE campus_id = p_campus_id AND agent_name = 'health'
+         AND action = 'ping_disk'
+         AND created_at > NOW() - INTERVAL '5 minutes'
+       ORDER BY created_at DESC LIMIT 1),
+    -- memory_status
+    (SELECT status FROM agent_logs
+       WHERE campus_id = p_campus_id AND agent_name = 'health'
+         AND action = 'ping_memory'
+         AND created_at > NOW() - INTERVAL '5 minutes'
+       ORDER BY created_at DESC LIMIT 1),
+    -- memory_detail
+    (SELECT error_message FROM agent_logs
+       WHERE campus_id = p_campus_id AND agent_name = 'health'
+         AND action = 'ping_memory'
+         AND created_at > NOW() - INTERVAL '5 minutes'
+       ORDER BY created_at DESC LIMIT 1);
 $$;
 
 GRANT EXECUTE ON FUNCTION get_campus_webhook_inbox_status(uuid) TO anon;

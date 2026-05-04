@@ -363,17 +363,9 @@ export function actionItems({ videos = [], editors = [], logs = [], inbox = null
   // 6. Error spike — 5+ agent errors in last hour
   const errorsLastHour = Number(summary?.errors_last_hour ?? 0);
   if (errorsLastHour >= 5) {
-    const cutoff = now - HOUR;
-    const recentErrors = (logs || []).filter(
-      (l) => l.status === 'error' && new Date(l.created_at).getTime() >= cutoff,
-    );
-    const counts = {};
-    for (const l of recentErrors) {
-      counts[l.agent_name] = (counts[l.agent_name] || 0) + 1;
-    }
-    const top = Object.entries(counts).sort((a, b) => b[1] - a[1])[0];
+    const top = topErrorAgent(logs, now);
     const detail = top
-      ? `most: ${top[0]} (${top[1]} of total)`
+      ? `most: ${top.name} (${top.count} of total)`
       : `${errorsLastHour} errors recorded`;
     items.push({
       id: 'error-spike',
@@ -385,28 +377,132 @@ export function actionItems({ videos = [], editors = [], logs = [], inbox = null
     });
   }
 
-  // Sort: urgency desc, then category, then headline
+  // 7. Tunnel down — health-ping verification failing.
+  //    >= 3 consecutive ping failures in last 5 min (matches the pulse
+  //    cell's red threshold).
+  const tunnelFailures = Number(summary?.tunnel_recent_failures ?? 0);
+  if (tunnelFailures >= 3) {
+    items.push({
+      id: 'tunnel-down',
+      category: 'tunnel-down',
+      headline: `Tunnel verification failing — ${tunnelFailures} consecutive ping failures`,
+      detail: truncate(summary?.tunnel_last_error || 'no error captured', 120),
+      anchor: '#system-health',
+      urgency: 3,
+    });
+  }
+
+  // 8. PM2 process(es) not online (most recent ping_pm2 status='error')
+  if (summary?.pm2_status === 'error') {
+    items.push({
+      id: 'pm2-fail',
+      category: 'pm2-fail',
+      headline: 'PM2 process(es) not online',
+      detail: truncate(summary?.pm2_detail || 'see Mac Mini PM2 status', 120),
+      anchor: '#system-health',
+      urgency: 3,
+    });
+  }
+
+  // 9. FFmpeg not responding on Mac Mini
+  if (summary?.ffmpeg_status === 'error') {
+    items.push({
+      id: 'ffmpeg-fail',
+      category: 'ffmpeg-fail',
+      headline: 'FFmpeg not responding on Mac Mini',
+      detail: truncate(summary?.ffmpeg_detail || 'check ffmpeg install on Mac Mini', 120),
+      anchor: '#system-health',
+      urgency: 3,
+    });
+  }
+
+  // 10. Mac Mini resources critical (disk OR memory at error level)
+  if (summary?.disk_status === 'error' || summary?.memory_status === 'error') {
+    const parts = [];
+    if (summary?.disk_status === 'error') parts.push(summary?.disk_detail || 'disk critical');
+    if (summary?.memory_status === 'error') parts.push(summary?.memory_detail || 'memory critical');
+    items.push({
+      id: 'resources-fail',
+      category: 'resources-fail',
+      headline: 'Mac Mini resources critical',
+      detail: truncate(parts.join(', '), 120),
+      anchor: '#system-health',
+      urgency: 3,
+    });
+  }
+
+  // 11. Output quality — QA error rate red (>= 2 in last 24h)
+  const qaErrors24h = Number(summary?.qa_errors_24h ?? 0);
+  if (qaErrors24h >= 2) {
+    const recentQaErr = (logs || []).find(
+      (l) => l.agent_name === 'qa' && l.status === 'error' && l.error_message,
+    );
+    const errMsg = recentQaErr?.error_message
+      ? `${recentQaErr.error_message} · review at #qa-queue`
+      : 'review at #qa-queue';
+    items.push({
+      id: 'output-quality',
+      category: 'output-quality',
+      headline: `${qaErrors24h} QA errors in last 24h`,
+      detail: truncate(errMsg, 120),
+      anchor: '#system-health',
+      urgency: 2,
+    });
+  }
+
+  // Sort by category priority — explicit list so infra items bubble to top
+  // (tunnel before webhook-fail before pm2 before ffmpeg before resources
+  // before cron-miss before error-spike), then output-layer items, then
+  // workload items. Ties break on headline.
   items.sort((a, b) => {
-    if (a.urgency !== b.urgency) return b.urgency - a.urgency;
-    if (a.category !== b.category) return a.category.localeCompare(b.category);
+    const ai = CATEGORY_PRIORITY.indexOf(a.category);
+    const bi = CATEGORY_PRIORITY.indexOf(b.category);
+    const aRank = ai === -1 ? Number.MAX_SAFE_INTEGER : ai;
+    const bRank = bi === -1 ? Number.MAX_SAFE_INTEGER : bi;
+    if (aRank !== bRank) return aRank - bRank;
     return a.headline.localeCompare(b.headline);
   });
 
   return items;
 }
 
+// Action item ranking. Lower index = higher priority. Spec: tunnel before
+// pm2 before ffmpeg before resources before output (infrastructure first).
+// Existing pre-Phase-A categories slot in around them by impact.
+const CATEGORY_PRIORITY = [
+  'tunnel-down',     // network transport down
+  'webhook-fail',    // application transport failing
+  'pm2-fail',        // process manager broken
+  'ffmpeg-fail',     // toolchain broken
+  'resources-fail',  // hardware critical
+  'cron-miss',       // scheduled work overdue
+  'error-spike',     // application error volume
+  'output-quality',  // QA failure rate
+  'qa-fail',         // editor needs to re-review
+  'stuck',           // pipeline backlog
+  'editor-overload', // capacity warning
+];
+
 // Layer 2 — System Pulse.
-// Binary cells. Returns { count, cells: [{ id, label, state, detail }] }
-// where count is the number of non-green cells.
+// Eight binary cells, one per failure mode at one layer of the stack:
+// network transport, application transport, scheduling, application errors,
+// process manager, toolchain, hardware, output quality. Returns
+// { count, cells: [{ id, label, pipLabel, state, detail }], errors }.
+//
+// Cells 2 (tunnel), 5 (pm2), 6 (ffmpeg), 7 (resources) are driven by the
+// Mac Mini health-ping agent (scripts/health-ping.js → agent_logs). When
+// the ping agent itself stops, those cells go amber (not green) — green
+// requires an active recent success, never just absence of failure.
 export function systemPulse({ logs = [], inbox = null, summary = null } = {}, now = Date.now()) {
-  // Webhook ingestion
+  // 1. Webhook ingestion (application transport — the inbox table)
   let webhookState = 'green';
   let webhookDetail = 'no failed webhooks in last hour';
+  const failedCount = Number(inbox?.failed ?? 0);
   if (inbox?.latest_failed_at) {
     const age = now - new Date(inbox.latest_failed_at).getTime();
     if (age < HOUR) {
       webhookState = 'red';
-      webhookDetail = `${inbox.failed} failed in last hour`;
+      webhookDetail = `${failedCount} failed in last hour — see action items`;
     }
   }
   if (webhookState !== 'red' && inbox?.oldest_pending_received_at) {
@@ -420,46 +516,127 @@ export function systemPulse({ logs = [], inbox = null, summary = null } = {}, no
     }
   }
 
-  // Cron schedule — aggregate worst across all crons
+  // 2. Webhook tunnel (network transport — active outbound ping by
+  //    health-ping agent, no longer time-based on inbound webhooks)
+  const tunnelFailures = Number(summary?.tunnel_recent_failures ?? 0);
+  const tunnelLastOk = summary?.last_tunnel_ping_ok
+    ? new Date(summary.last_tunnel_ping_ok).getTime()
+    : null;
+  const tunnelLastErr = summary?.tunnel_last_error || null;
+  let tunnelState = 'amber';
+  let tunnelDetail;
+  if (tunnelFailures >= 3) {
+    tunnelState = 'red';
+    tunnelDetail = `tunnel down · ${tunnelFailures} consecutive failures${tunnelLastErr ? ` · ${tunnelLastErr}` : ''}`;
+  } else if (tunnelFailures >= 1) {
+    tunnelState = 'amber';
+    tunnelDetail = `${tunnelFailures} ping failure${tunnelFailures === 1 ? '' : 's'} in last 5 min`;
+  } else if (tunnelLastOk && now - tunnelLastOk < 5 * 60 * 1000) {
+    tunnelState = 'green';
+    tunnelDetail = `tunnel verified · last ping ${timeAgo(summary.last_tunnel_ping_ok, now)}`;
+  } else {
+    tunnelState = 'amber';
+    tunnelDetail = 'no recent pings — check ping agent';
+  }
+
+  // 3. Cron schedule (work scheduling — prevCronFire vs latest log)
   const cronEvals = CRON_AGENTS.map((a) => evaluateCron(a, summary, now));
   const cronState = worstState(cronEvals.map((c) => c.state));
   let cronDetail;
   if (cronState === 'green') {
     cronDetail = 'all crons on schedule';
+  } else if (cronState === 'red') {
+    const worst = cronEvals.find((c) => c.state === 'red');
+    cronDetail = worst
+      ? `${worst.agent} not fired in ${timeAgo(worst.prev, now)} — check scheduler`
+      : 'cron overdue';
   } else {
-    const worst = cronEvals.find((c) => c.state === cronState);
-    cronDetail = worst?.detail || `${cronState} cron condition`;
+    const worst = cronEvals.find((c) => c.state === 'amber');
+    cronDetail = worst
+      ? `${worst.agent} ${timeAgo(worst.prev, now)} overdue`
+      : 'cron overdue';
   }
 
-  // Worker errors
+  // 4. Worker errors (application errors — agent_logs.status='error')
   const errors = Number(summary?.errors_last_hour ?? 0);
   let errorsState = 'green';
   if (errors >= 5) errorsState = 'red';
   else if (errors >= 1) errorsState = 'amber';
-  const errorsDetail = errors === 0
-    ? 'no errors in last hour'
-    : `${errors} error${errors === 1 ? '' : 's'} in last hour`;
-
-  // Webhook tunnel — last received timestamp
-  let tunnelState = 'red';
-  let tunnelDetail = 'no webhook received yet';
-  if (summary?.last_webhook_received_at) {
-    const age = now - new Date(summary.last_webhook_received_at).getTime();
-    if (age < 24 * HOUR) {
-      tunnelState = 'green';
-      tunnelDetail = `last webhook ${timeAgo(summary.last_webhook_received_at, now)}`;
-    } else if (age < 48 * HOUR) {
-      tunnelState = 'amber';
-      tunnelDetail = `last webhook ${timeAgo(summary.last_webhook_received_at, now)}`;
-    } else {
-      tunnelState = 'red';
-      tunnelDetail = `no webhook in ${timeAgo(summary.last_webhook_received_at, now)}`;
-    }
+  let errorsDetail;
+  if (errors === 0) {
+    errorsDetail = 'no errors in last hour';
+  } else if (errors < 5) {
+    errorsDetail = `${errors} error${errors === 1 ? '' : 's'} in last hour`;
+  } else {
+    const top = topErrorAgent(logs, now);
+    errorsDetail = top
+      ? `${errors} errors in last hour — most: ${top.name}`
+      : `${errors} errors in last hour`;
   }
 
-  // Output quality — gate principle, broadened from LUFS-only to all QA
-  // failures (caption formatting, brand-term spell check, stutter/filler
-  // detection, LUFS audio). qa_errors_24h is the gating metric.
+  // 5. Process manager (OS processes — pm2 jlist via health-ping)
+  const pm2Status = summary?.pm2_status || null;
+  const pm2Detail = summary?.pm2_detail || null;
+  let pm2State;
+  let pm2DisplayDetail;
+  if (pm2Status === 'success') {
+    pm2State = 'green';
+    pm2DisplayDetail = 'all PM2 processes online';
+  } else if (pm2Status === 'error') {
+    pm2State = 'red';
+    pm2DisplayDetail = pm2Detail || 'PM2 process failure';
+  } else {
+    pm2State = 'amber';
+    pm2DisplayDetail = 'no recent PM2 health ping';
+  }
+
+  // 6. FFmpeg (toolchain — ffmpeg -version via health-ping)
+  const ffmpegStatus = summary?.ffmpeg_status || null;
+  const ffmpegDetail = summary?.ffmpeg_detail || null;
+  let ffmpegState;
+  let ffmpegDisplayDetail;
+  if (ffmpegStatus === 'success') {
+    ffmpegState = 'green';
+    ffmpegDisplayDetail = 'ffmpeg responding';
+  } else if (ffmpegStatus === 'error') {
+    ffmpegState = 'red';
+    ffmpegDisplayDetail = ffmpegDetail || 'ffmpeg not responding';
+  } else {
+    ffmpegState = 'amber';
+    ffmpegDisplayDetail = 'no recent ffmpeg health ping';
+  }
+
+  // 7. Server resources (hardware — disk + memory via health-ping).
+  //    Aggregate worst of disk and memory; surface the offending component.
+  const diskStatus = summary?.disk_status || null;
+  const diskDetailRaw = summary?.disk_detail || null;
+  const memoryStatus = summary?.memory_status || null;
+  const memoryDetailRaw = summary?.memory_detail || null;
+  const resourceParts = [
+    { name: 'disk', status: diskStatus, detail: diskDetailRaw },
+    { name: 'memory', status: memoryStatus, detail: memoryDetailRaw },
+  ];
+  const anyResourceMissing = resourceParts.some((p) => !p.status);
+  const anyResourceError = resourceParts.find((p) => p.status === 'error');
+  const anyResourceWarning = resourceParts.find((p) => p.status === 'warning');
+  let resourcesState;
+  let resourcesDisplayDetail;
+  if (anyResourceError) {
+    resourcesState = 'red';
+    resourcesDisplayDetail = `${anyResourceError.name} critical · ${anyResourceError.detail || 'see logs'}`;
+  } else if (anyResourceWarning) {
+    resourcesState = 'amber';
+    resourcesDisplayDetail = `${anyResourceWarning.name} elevated · ${anyResourceWarning.detail || 'see logs'}`;
+  } else if (anyResourceMissing) {
+    resourcesState = 'amber';
+    resourcesDisplayDetail = 'no recent resource health ping';
+  } else {
+    resourcesState = 'green';
+    resourcesDisplayDetail = 'disk + memory healthy';
+  }
+
+  // 8. Output quality (application output — QA error rate, gate principle).
+  //    Gate: no EDITED video → no QA check has run → green by definition.
   const editedCount = Number(summary?.edited_video_count ?? 0);
   const qaErrors = Number(summary?.qa_errors_24h ?? 0);
   let outputState = 'green';
@@ -473,20 +650,40 @@ export function systemPulse({ logs = [], inbox = null, summary = null } = {}, no
     outputDetail = '1 QA error in last 24h';
   } else {
     outputState = 'red';
-    outputDetail = `${qaErrors} QA errors in last 24h`;
+    outputDetail = `${qaErrors} QA errors in last 24h — see QA queue`;
   }
 
-  // Per-cell pipLabel disambiguates the abbreviated pip strip in the header
-  // (otherwise both Webhook ingestion and Webhook tunnel would render WEBH).
+  // Cell order matches the spec's pulse-cell architecture table
+  // (Phase A spec §"Pulse cell architecture after Phase A").
+  // Per-cell pipLabel disambiguates the header's abbreviated pip strip;
+  // OUT/PM2/FFMP/RES are explicit so abbrev() collisions can't happen.
   const cells = [
-    { id: 'webhook', label: 'Webhook ingestion', pipLabel: 'INGEST', state: webhookState, detail: truncate(webhookDetail, 60) },
-    { id: 'cron',    label: 'Cron schedule',     pipLabel: 'CRON',   state: cronState,    detail: truncate(cronDetail, 60) },
-    { id: 'errors',  label: 'Worker errors',     pipLabel: 'ERRORS', state: errorsState,  detail: truncate(errorsDetail, 60) },
-    { id: 'tunnel',  label: 'Webhook tunnel',    pipLabel: 'TUNNEL', state: tunnelState,  detail: truncate(tunnelDetail, 60) },
-    { id: 'output',  label: 'Output quality',    pipLabel: 'OUTPUT', state: outputState,  detail: truncate(outputDetail, 60) },
+    { id: 'webhook',   label: 'Webhook ingestion', pipLabel: 'INGEST', state: webhookState,   detail: truncate(webhookDetail, 60) },
+    { id: 'tunnel',    label: 'Webhook tunnel',    pipLabel: 'TUNNEL', state: tunnelState,    detail: truncate(tunnelDetail, 60) },
+    { id: 'cron',      label: 'Cron schedule',     pipLabel: 'CRON',   state: cronState,      detail: truncate(cronDetail, 60) },
+    { id: 'errors',    label: 'Worker errors',     pipLabel: 'ERRORS', state: errorsState,    detail: truncate(errorsDetail, 60) },
+    { id: 'pm2',       label: 'Process manager',   pipLabel: 'PM2',    state: pm2State,       detail: truncate(pm2DisplayDetail, 60) },
+    { id: 'ffmpeg',    label: 'FFmpeg',            pipLabel: 'FFMP',   state: ffmpegState,    detail: truncate(ffmpegDisplayDetail, 60) },
+    { id: 'resources', label: 'Server resources',  pipLabel: 'RES',    state: resourcesState, detail: truncate(resourcesDisplayDetail, 60) },
+    { id: 'output',    label: 'Output quality',    pipLabel: 'OUT',    state: outputState,    detail: truncate(outputDetail, 60) },
   ];
   const count = cells.filter((c) => c.state !== 'green').length;
   return { count, cells, errors };
+}
+
+// Find which agent contributed the most error logs in the last hour.
+// Used by both the worker-errors pulse-cell red detail and the
+// error-spike action item.
+function topErrorAgent(logs, now = Date.now()) {
+  const cutoff = now - HOUR;
+  const counts = {};
+  for (const l of logs || []) {
+    if (l.status !== 'error') continue;
+    if (new Date(l.created_at).getTime() < cutoff) continue;
+    counts[l.agent_name] = (counts[l.agent_name] || 0) + 1;
+  }
+  const top = Object.entries(counts).sort((a, b) => b[1] - a[1])[0];
+  return top ? { name: top[0], count: top[1] } : null;
 }
 
 // ============================================================================
