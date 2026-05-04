@@ -1936,3 +1936,60 @@ The Session 21 "What's Next" list still has two open items:
 1. **Add `recommendations` and `underperforming_patterns` columns to `performance_signals`** (or accept that they live inside `raw_output` indefinitely). The dashboard currently can't render them as first-class fields.
 2. **Consider a unique partial index on `(campus_id, post_url) WHERE post_url IS NOT NULL`** — now that the pipeline writes post_urls live, the race window has gone from theoretical to plausible.
 
+---
+
+## Session 23 — May 4, 2026
+
+Closed the brand-account gap from Session 22. 58 backfilled videos for Alpha High (the school's own social presence) had been left at `student_id = null` because the seed script intentionally excluded brand accounts. This session added a `students.is_brand_account` discriminator, seeded Alpha High as a brand row with its TikTok / Instagram handles, linked the 58 orphan videos, and drafted the Profile Views Agent workflow spec the user described in `workflows/profile-views.md`.
+
+### Schema — `students.is_brand_account`
+
+`scripts/migrations/2026-05-04-students-is-brand-account.sql` (new, applied by Caiden in Supabase SQL Editor):
+
+```sql
+ALTER TABLE students ADD COLUMN IF NOT EXISTS is_brand_account boolean NOT NULL DEFAULT false;
+CREATE INDEX IF NOT EXISTS students_is_brand_account_idx ON students (campus_id) WHERE is_brand_account = true;
+```
+
+Why a column over special-casing names: the dashboard, the Profile Views Agent, and any future per-student-vs-per-brand reporting can branch on a boolean instead of a string compare against `"Alpha High"`. Default `false` so every existing row stays a person; only Alpha High flips true.
+
+### Seed — Alpha High brand row + 58 video links
+
+`scripts/seed-students.js` refactored from a string-name list to an object array, each entry carrying optional `handle_tiktok`, `handle_instagram`, `is_brand_account`. Backwards compatible: the 7 human students still seed identically (skip-on-exists), and the new Alpha High entry inserts with all four extra fields. Run results:
+
+- 7 human students: SKIP (already seeded in Session 22).
+- Alpha High: inserted as id `1d2736e0-6191-45bb-8675-f793b8d11dc8` with `handle_tiktok = handle_instagram = "alphahigh.school"` and `is_brand_account = true`.
+- 58 backfilled videos linked by exact `student_name = "Alpha High"` match scoped to `student_id IS NULL`. Final state: 0 `videos` rows have `post_url IS NOT NULL AND student_id IS NULL` for the Austin campus. All 126 backfilled videos are now student-attributed (Alex Mathews 31, Alpha High 58, Jackson Price 18, Geetesh Parelly 6, Stella Grams 5, Cruce Sanders 4, Maddie Price 2, Reuben Runacres 1, Austin Way 1).
+
+### Drafted — `workflows/profile-views.md` (new)
+
+Workflow spec for the Profile Views Agent the user described, written in the same template as `workflows/scripting-agent.md`. Captures every build decision the user made:
+
+- **Trigger:** `0 9 * * 4` (Thursday 9 AM). Cron-only; no webhook path.
+- **Inputs:** `students.handle_tiktok` / `handle_instagram` per student (brand and human alike); existing `videos.post_url` index for URL-to-video matching; existing `performance` rows for cumulative-to-delta arithmetic.
+- **Tools:** existing `tools/scraper.scrapeProfileVideos(profileUrl, platform, 20)` (already used by the Onboarding Agent's Section 3); single new file `agents/profile-views.js` for orchestration.
+- **Friday-aligned `week_of`:** computed by `mostRecentFriday(now)` — the Friday on or before today. Sanity-checked against weekday inputs before the spec landed (Thu 4/30 → 4/24, Thu 5/7 → 5/1, Fri 5/8 → 5/8, Sun 5/10 → 5/8). Matches Scott's sheet header alignment so `sync-performance-tracker.js` and the agent write to the same Friday-keyed buckets.
+- **Cumulative-vs-delta semantics:** the user's "subtract last row" instruction is mathematically correct only for the Week 1 → Week 2 transition, when the last row is itself a cumulative. The spec generalizes to "subtract `SUM(view_count)` over all prior weeks for `(video_id, platform)`" — that running sum equals the most-recently-recorded cumulative, since every subsequent row is a delta. First scrape with no prior rows writes `view_count = current_cumulative` (matches the user's "first week writes cumulative" rule). Negative deltas (deleted post / metric reset) floor at 0 with a single per-run warning log.
+- **URL matching:** scraped video URL canonicalized with the same `pipeline.canonicalizePostUrl` rule and looked up against an in-memory `videos.post_url` index. Unmatched URLs aggregate into a single per-run summary entry rather than per-video logs (mirrors `sync-performance-tracker.js`).
+- **Idempotency:** `ON CONFLICT (video_id, platform, week_of) DO UPDATE`. Same-day re-runs are safe. The same dedupe-before-chunk defense `sync-performance-tracker.js` got in Session 21 is in this spec from day one.
+- **Edge cases enumerated:** no handles, Apify outage, unmatched URL, negative delta, sheet/agent week_of collision (last write wins, both observations describe the same week's reality), brand vs human, multiple handles (out of scope v1), pre-existing sheet row at the same `week_of` (overwritten).
+- **Test plan:** `scripts/test-profile-views-agent.js` covering Friday-alignment unit cases, real Apify scrape against Alpha High (high-volume signal), first-week vs delta path, unmatched aggregation, negative-delta floor, cron registration smoke. Skips gracefully when `APIFY_API_TOKEN` unset.
+- **Out of scope v1:** YouTube, multiple handles per platform, historical sheet backfill (owned by `sync-performance-tracker.js`), dashboard brand-vs-human rollups (owned by the dashboard).
+
+The spec explicitly notes the cumulative-vs-delta arithmetic correction and the rationale for it, so the next implementer doesn't ship a literal "subtract last row" that breaks at week 3.
+
+### Files changed
+
+- `scripts/migrations/2026-05-04-students-is-brand-account.sql` (new — applied)
+- `scripts/seed-students.js` (refactored to object array, +Alpha High entry)
+- `workflows/profile-views.md` (new — full SOP)
+- `docs/progress-log.md` (this entry)
+
+### What's Next
+
+1. **Build the Profile Views Agent.** Spec is in `workflows/profile-views.md`. The dependencies it needs are all present (handles set on Alpha High, post_url backfilled, unique constraint live, scraper exists). Estimated scope: one new `agents/profile-views.js`, one new test, a server.js cron registration line behind `APIFY_API_TOKEN`, and an `architecture.md` matrix update. Brand-voice / self-heal patterns are reused without modification.
+2. **Populate handles for the 7 human students** (Jackson Price, Cruce Sanders, Reuben Runacres, Maddie Price, Geetesh Parelly, Stella Grams, Austin Way). Without handles, the Profile Views Agent will skip them. The path forward is either onboarding completion (which extracts handles from answers) or a one-shot UPDATE with manually collected handles.
+3. **Add `recommendations` and `underperforming_patterns` columns to `performance_signals`** (carried forward from Session 21).
+4. **Consider a unique partial index on `(campus_id, post_url) WHERE post_url IS NOT NULL`** (carried forward).
+
+

@@ -1,17 +1,24 @@
 #!/usr/bin/env node
 /**
- * Seed the 7 Austin students who already have published content but
- * never came through the onboarding flow. Backfilled videos rows
- * (Session 21) carry their `student_name` but `student_id = null`,
- * so per-student dashboard rollups don't surface them.
+ * Seed Austin student rows for accounts that already have published
+ * content but never came through the onboarding flow. Backfilled
+ * `videos` rows (Session 21) carry their `student_name` but
+ * `student_id = null`, so per-student dashboard rollups don't surface
+ * them.
  *
  * After insert, this script also patches existing `videos` rows by
- * matching `student_name` and filling `student_id`. Idempotent — both
- * the student insert (skip-on-exists by name) and the videos update
- * (only fills NULL) are safe to re-run.
+ * exact `student_name` match scoped to `student_id IS NULL` so it never
+ * overwrites a student_id already set elsewhere (e.g., by the pipeline).
  *
- * "Alpha High" is intentionally excluded — it's a brand account, not a
- * student. Its videos legitimately stay at `student_id = null`.
+ * Brand accounts: Alpha High is the school's own social presence — it
+ * publishes through the same pipeline but has no human owner. It carries
+ * `is_brand_account = true` and the school's TikTok / Instagram handles
+ * (alphahigh.school) so the future profile-views agent
+ * (`workflows/profile-views.md`) can scrape it alongside the human
+ * students.
+ *
+ * Both the insert (skip-on-exists by name) and the videos update (only
+ * fills NULL) are idempotent.
  */
 
 require('dotenv').config();
@@ -20,46 +27,57 @@ const { supabase } = require('../lib/supabase');
 
 const AUSTIN_CAMPUS_ID = '0ba4268f-f010-43c5-906c-41509bc9612f';
 
-const STUDENT_NAMES = [
-  'Jackson Price',
-  'Cruce Sanders',
-  'Reuben Runacres',
-  'Maddie Price',
-  'Geetesh Parelly',
-  'Stella Grams',
-  'Austin Way',
+const STUDENTS = [
+  { name: 'Jackson Price' },
+  { name: 'Cruce Sanders' },
+  { name: 'Reuben Runacres' },
+  { name: 'Maddie Price' },
+  { name: 'Geetesh Parelly' },
+  { name: 'Stella Grams' },
+  { name: 'Austin Way' },
+  {
+    name: 'Alpha High',
+    handle_tiktok: 'alphahigh.school',
+    handle_instagram: 'alphahigh.school',
+    is_brand_account: true,
+  },
 ];
+
+const STUDENT_NAMES = STUDENTS.map((s) => s.name);
 
 async function seedStudents() {
   const inserted = [];
   const skipped = [];
 
-  for (const name of STUDENT_NAMES) {
+  for (const student of STUDENTS) {
     const { data: existing } = await supabase
       .from('students')
       .select('id, name')
       .eq('campus_id', AUSTIN_CAMPUS_ID)
-      .eq('name', name)
+      .eq('name', student.name)
       .maybeSingle();
 
     if (existing) {
       skipped.push({ id: existing.id, name: existing.name });
-      console.log(`  SKIP: ${name} (already exists, id: ${existing.id})`);
+      console.log(`  SKIP: ${student.name} (already exists, id: ${existing.id})`);
       continue;
     }
 
+    const row = { campus_id: AUSTIN_CAMPUS_ID, ...student };
+
     const { data, error } = await supabase
       .from('students')
-      .insert({ campus_id: AUSTIN_CAMPUS_ID, name })
-      .select('id, name')
+      .insert(row)
+      .select('id, name, is_brand_account')
       .single();
 
     if (error) {
-      console.error(`  FAIL: ${name} — ${error.message}`);
-      throw new Error(`students insert failed for "${name}": ${error.message}`);
+      console.error(`  FAIL: ${student.name} — ${error.message}`);
+      throw new Error(`students insert failed for "${student.name}": ${error.message}`);
     }
     inserted.push(data);
-    console.log(`  OK:   ${data.name} — id: ${data.id}`);
+    const tag = data.is_brand_account ? ' [brand]' : '';
+    console.log(`  OK:   ${data.name}${tag} — id: ${data.id}`);
   }
 
   return { inserted, skipped };
@@ -68,9 +86,6 @@ async function seedStudents() {
 /**
  * For each seeded (or pre-existing) student, link any backfilled videos
  * that match by `student_name` and currently have `student_id = null`.
- *
- * Why scoped to NULL: never overwrite a student_id already set elsewhere
- * (e.g., by the pipeline). The match is exact-name, campus-scoped.
  */
 async function linkVideos() {
   const { data: students, error: sErr } = await supabase
@@ -102,7 +117,7 @@ async function linkVideos() {
 }
 
 async function run() {
-  console.log(`Seeding ${STUDENT_NAMES.length} students for Austin campus...\n`);
+  console.log(`Seeding ${STUDENTS.length} students for Austin campus...\n`);
   const { inserted, skipped } = await seedStudents();
   console.log(`\n  inserted: ${inserted.length}, skipped: ${skipped.length}`);
 
@@ -121,4 +136,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { run, STUDENT_NAMES };
+module.exports = { run, STUDENTS, STUDENT_NAMES };
