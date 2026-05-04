@@ -118,7 +118,13 @@ const fragmentShader = `
     vec3 front = vec3(0.5);
     vec3 result = mix(back, front, n);
 
-    gl_FragColor = vec4(result, blurAlpha);
+    // Deliberate divergence from docs/grain-background-shader.jsx: the
+    // original writes blurAlpha as the pixel alpha, which combined with
+    // the radial blur mask produces a visible spotlight on this Mac Mini
+    // setup that doesn't show up in Claude Design's preview. Forcing
+    // alpha=1.0 makes the grain uniform across the viewport and matches
+    // the design preview's appearance.
+    gl_FragColor = vec4(result, 1.0);
   }
 `;
 
@@ -234,10 +240,13 @@ export default function GrainBackground({
       transparent: true,
     });
 
-    // Match his geometry: 3x3 plane positioned at (-0.8, -0.5, 1)
-    const geometry = new THREE.PlaneGeometry(3, 3);
+    // Fullscreen plane — covers the entire viewport so there's no blank strip.
+    // (p5aholic uses an off-center 3x3 plane at (-0.8, -0.5, 1), but that's
+    // tuned for his portfolio layout. For a fullscreen dashboard background
+    // we want full coverage.)
+    const geometry = new THREE.PlaneGeometry(2, 2);
     const mesh = new THREE.Mesh(geometry, material);
-    mesh.position.set(-0.8, -0.5, 1);
+    mesh.position.set(0, 0, 1);
     scene.add(mesh);
 
     let frameId;
