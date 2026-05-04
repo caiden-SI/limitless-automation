@@ -42,24 +42,38 @@ function mostRecentFriday(now = new Date()) {
 }
 
 /**
- * Same canonicalization rule as `agents/pipeline.canonicalizePostUrl` and
- * `scripts/sync-performance-tracker.canonicalizeUrl`. Drop query/hash,
- * lowercase host, strip trailing slash. A scraped URL canonicalizes
- * identically to a stored `videos.post_url`, which is what the lookup
- * Map indexes on.
+ * Same canonicalization rule as `scripts/sync-performance-tracker.canonicalizeUrl`.
+ * Drop query/hash, lowercase host, strip trailing slash. A scraped URL
+ * canonicalizes identically to a stored `videos.post_url`, which is what
+ * the lookup Map indexes on.
+ *
+ * Hardened in Codex review #2: only `http:` and `https:` are accepted,
+ * the host must be non-empty, and the prior catch-block fallback that
+ * synthesized a key from unparseable input is gone. Both this function
+ * and the sync's `canonicalizeUrl` must drift together — anything stored
+ * by one and looked up by the other has to canonicalize identically.
+ *
+ * Note: `scripts/backfill-post-urls.canonicalizeUrl` and
+ * `agents/pipeline.canonicalizePostUrl` are siblings of this rule. The
+ * pipeline copy in particular is on the live write path and should be
+ * audited / updated alongside this file the next time the rule changes.
  */
 function canonicalizePostUrl(url) {
   if (!url) return null;
   const raw = String(url).trim();
   if (!raw) return null;
+  if (!/^https?:\/\//i.test(raw)) return null;
+  let u;
   try {
-    const u = new URL(raw);
-    u.search = '';
-    u.hash = '';
-    return `${u.protocol}//${u.host.toLowerCase()}${u.pathname}`.replace(/\/+$/, '');
+    u = new URL(raw);
   } catch {
-    return raw.replace(/[?#].*$/, '').replace(/\/+$/, '');
+    return null;
   }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') return null;
+  if (!u.host) return null;
+  u.search = '';
+  u.hash = '';
+  return `${u.protocol}//${u.host.toLowerCase()}${u.pathname}`.replace(/\/+$/, '');
 }
 
 /**

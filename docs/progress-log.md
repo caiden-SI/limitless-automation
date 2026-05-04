@@ -2230,6 +2230,64 @@ Two items from the review are NOT in this commit; they are proper follow-ups, no
 - `workflows/profile-views.md` — new `## Operator runbook: negative-delta recovery` and `## Sheet sync decommission gate` sections.
 - `docs/progress-log.md` — this subsection.
 
+### Second adversarial review fixes
+
+A second Codex pass focused on `lib/google.js` and the parser/canonicalization helpers in `scripts/sync-performance-tracker.js`. Two findings landed; both applied.
+
+1. **HIGH — `parseWeekHeader` misdated cross-year weeks** (`scripts/sync-performance-tracker.js`).
+
+   The original parser stamped every header with `new Date().getFullYear()`, so a January 2026 sync seeing a real boundary header `"12/27-1/3"` would write `week_of = 2026-12-27` (a year in the future). Same problem for any leftover prior-year header (`"11/14-11/21"` visible in January) — silent corruption that breaks same-week conflict behavior and pollutes downstream weekly analysis until cleaned up manually. No adversarial input required; this hits at every calendar rollover.
+
+   Fix: signature changed to `parseWeekHeader(header, year, syncDate)` — `syncDate` is required (no `new Date()` fallback in the parser, so tests pin a stable reference). The regex now captures both start and end M/D. Two heuristics applied in order:
+
+   - **Wrap detection** — if `end_month < start_month`, the range crosses the year boundary; treat `year` as the end year and return start in `year - 1`. Catches `"12/27-1/3"` cleanly.
+   - **Future detection** — otherwise, if the parsed start lands more than 7 days past `syncDate`, decrement by one year. Catches stale prior-year headers like `"11/14-11/21"` lingering in a January sync.
+
+   `syncTab` threads a single `syncDate` (computed once in `run()`) through all per-tab calls so wrap/future inference is stable across the whole run. Test 11 covers all five spec cases (`12/27-1/3`, `1/3-1/10`, `11/14-11/21`, `2/6-2/13`, `4/23-4/30`) plus the existing happy-path forms (`1/1/-2/6`, `?-2/6`, empty) and asserts `syncDate` omission throws.
+
+2. **MEDIUM — `canonicalizeUrl` accepted malformed protocols as matchable keys** (`scripts/sync-performance-tracker.js` and `agents/profile-views.js`).
+
+   Both functions used `new URL()` and a permissive `catch` block that ran a regex fallback against the raw input — Node's URL parser would happily normalize `javascript:alert(1)` into `javascript://alert(1)`, `mailto:test@example.com` into `mailto://test@example.com`, and `http:example.com/path` into `http://example.com/path`, all of which then became lookup keys. A polluted `videos.post_url` could silently match the wrong video.
+
+   Fix: tightened both functions identically.
+
+   - Pre-flight `^https?:\/\/` regex check on the raw input — rejects malformed `http:foo` (no `//`), protocol-relative `//foo`, and free text immediately.
+   - Allowlisted protocols: only `http:` and `https:` accepted.
+   - Empty-host check: `https://` alone returns null (URL parser also throws on this; both paths covered).
+   - Removed the `catch`-block regex fallback that was synthesizing keys from unparseable input.
+
+   Both copies (sync's `canonicalizeUrl`, agent's `canonicalizePostUrl`) are now byte-identical in behavior. Test 12 runs the same 10 cases against both functions and asserts parity, so any future drift would fail loudly.
+
+   `scripts/backfill-post-urls.canonicalizeUrl` and `agents/pipeline.canonicalizePostUrl` are also siblings of this rule but were intentionally left alone this pass — backfill is one-shot and already executed against the old rule (changing it risks divergence with the rows already in DB), and the pipeline copy is on the live write path and warrants its own review pass. Both are noted in code comments for the next time the rule moves.
+
+### Test status after second-review fixes
+
+`scripts/test-profile-views-agent.js`: **12/12 pass**.
+
+```
+PASS  1. Friday alignment unit cases
+PASS  2. Real Apify scrape against Alpha High TikTok
+PASS  3. Cold-start / sheet boundary / steady-state paths
+PASS  4. scrapeProfileVideos returns viewCount (source check)
+PASS  5. matchScrapedItems unmatched aggregation
+PASS  6. Negative delta floors at 0
+PASS  7. Cron registration smoke test
+PASS  8. Sync preflight refuses on apify-lineage
+PASS  9. Duplicate post_url detection logs warning
+PASS  10. Numeric-string viewCount + invalid shapes
+PASS  11. parseWeekHeader cross-year inference     [new]
+PASS  12. canonicalize allowlist parity            [new]
+```
+
+### Files changed (Second adversarial review fixes)
+
+- `scripts/sync-performance-tracker.js` — `parseWeekHeader` signature gains required `syncDate`, with wrap + future-detection heuristics; `canonicalizeUrl` tightened to HTTPS-only with non-empty host; `syncTab` threads `syncDate` through.
+- `agents/profile-views.js` — `canonicalizePostUrl` tightened identically; doc-block notes the two unaudited siblings (`backfill-post-urls`, `pipeline`).
+- `scripts/test-profile-views-agent.js` — 2 new tests (`parseWeekHeader` cross-year, `canonicalize` allowlist parity).
+- `docs/progress-log.md` — this subsection.
+
+`workflows/profile-views.md` was not changed — neither the canonicalization rules nor the parser inference are documented in detail in the spec, so the new behavior doesn't contradict anything written.
+
 
 
 

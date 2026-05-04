@@ -75,53 +75,117 @@ function normalizePlatform(s) {
  * Tracker rows often carry `?is_from_webapp=1&sender_device=pc&web_id=...`
  * suffixes that vary per share. Two URLs that point at the same post must
  * canonicalize identically so the lookup against `videos.post_url` is stable.
+ *
+ * Hardened in Codex review #2: only `http:` and `https:` are accepted, the
+ * host must be non-empty, and the prior catch-block fallback that used
+ * `raw.replace(...)` to synthesize a key from unparseable input is gone.
+ * Anything else returns `null` so the row falls into the unmatched/logged
+ * path rather than producing a key that could silently match the wrong
+ * `videos.post_url`. Mirror copy in `agents/profile-views.canonicalizePostUrl`
+ * — keep them aligned.
  */
 function canonicalizeUrl(url) {
   if (!url) return null;
   const raw = String(url).trim();
   if (!raw) return null;
+  // Reject anything that doesn't already start with `http://` or `https://`.
+  // Node's URL parser is lenient enough to accept `http:example.com/path` and
+  // normalize it to `http://example.com/path`; we want strict here.
+  if (!/^https?:\/\//i.test(raw)) return null;
+  let u;
   try {
-    const u = new URL(raw);
-    u.search = '';
-    u.hash = '';
-    let s = `${u.protocol}//${u.host.toLowerCase()}${u.pathname}`;
-    return s.replace(/\/+$/, '');
+    u = new URL(raw);
   } catch {
-    return raw.replace(/[?#].*$/, '').replace(/\/+$/, '');
+    return null;
   }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') return null;
+  if (!u.host) return null;
+  u.search = '';
+  u.hash = '';
+  return `${u.protocol}//${u.host.toLowerCase()}${u.pathname}`.replace(/\/+$/, '');
 }
 
 /**
  * Parse a weekly-bucket header into the start date as YYYY-MM-DD.
  *
+ * The header omits the year (Scott's tracker is single-year-by-shape:
+ * `"M/D-M/D"`), so we need to infer which calendar year the start belongs
+ * to. Two heuristics, applied in order:
+ *
+ *   1. **Range wraps the year boundary** (`end_month < start_month`, e.g.
+ *      `"12/27-1/3"`): the start is in `(year - 1)`, the end in `year`.
+ *      The default `year = new Date().getFullYear()` is what `run()` uses,
+ *      so a January sync seeing a wrap header lands the start on the prior
+ *      December where it belongs.
+ *   2. **Start parses more than 7 days into the future** relative to
+ *      `syncDate`: the only way that happens with normal tracker data is a
+ *      January sync seeing a leftover same-year header from the previous
+ *      calendar year (e.g. a January 2026 sync seeing `"11/14-11/21"`).
+ *      Decrement `year` by 1 so the bucket lands on the prior year.
+ *
+ * Otherwise, both start and end are in `year`.
+ *
  * Accepted forms (observed in the tracker):
  *   "2/6-2/13"     → start "2/6"
  *   "2/27-3/6"     → start "2/27"
+ *   "12/27-1/3"    → start "12/27" in (year - 1)  ← cross-year wrap
  *   "1/1/-2/6"     → start "1/1" (extra slash collapsed)
  *   "2/27-3/6\t"   → trailing whitespace tolerated
  *
  * Rejected forms (returns null — caller skips the column):
  *   "?-2/6"        → unattributable baseline; the tracker uses this for the
- *                    pre-tracking lump sum and we cannot pin it to a Monday.
+ *                    pre-tracking lump sum and we cannot pin it to a date.
+ *   missing/invalid end M/D — the end is required for wrap detection.
  *
  * @param {string} header
- * @param {number} year - the calendar year these M/D pairs belong to
+ * @param {number} year - the calendar year of the END M/D (typically
+ *   `new Date().getFullYear()` when called from `run()`).
+ * @param {Date} syncDate - reference "today" for the future-detection
+ *   heuristic. Required, not defaulted, so tests can pin it.
  * @returns {string|null} YYYY-MM-DD start of the bucket, or null
  */
-function parseWeekHeader(header, year) {
+function parseWeekHeader(header, year, syncDate) {
   if (!header) return null;
+  if (!(syncDate instanceof Date)) {
+    throw new Error('parseWeekHeader requires a Date instance for syncDate');
+  }
+
   // Strip whitespace and collapse runs of `/` so "1/1//-2/6" parses normally.
   // The trailing-slash form "1/1/-2/6" is handled by the optional `/?` in the
   // regex below — collapsing alone doesn't catch a lone slash before `-`.
   const cleaned = String(header).replace(/\s+/g, '').replace(/\/{2,}/g, '/');
-  const m = cleaned.match(/^(\d{1,2})\/(\d{1,2})\/?-/);
+
+  // Parse BOTH start and end M/D. End is required so we can detect the
+  // year-wrap case `end_month < start_month`. Linear-time regex; no nested
+  // quantifiers → safe against ReDoS on adversarial input.
+  const m = cleaned.match(/^(\d{1,2})\/(\d{1,2})\/?-(\d{1,2})\/(\d{1,2})/);
   if (!m) return null;
-  const month = parseInt(m[1], 10);
-  const day = parseInt(m[2], 10);
-  if (!(month >= 1 && month <= 12 && day >= 1 && day <= 31)) return null;
-  const mm = String(month).padStart(2, '0');
-  const dd = String(day).padStart(2, '0');
-  return `${year}-${mm}-${dd}`;
+  const startMonth = parseInt(m[1], 10);
+  const startDay = parseInt(m[2], 10);
+  const endMonth = parseInt(m[3], 10);
+  const endDay = parseInt(m[4], 10);
+  if (!(startMonth >= 1 && startMonth <= 12 && startDay >= 1 && startDay <= 31)) return null;
+  if (!(endMonth >= 1 && endMonth <= 12 && endDay >= 1 && endDay <= 31)) return null;
+
+  let resolvedYear;
+  if (endMonth < startMonth) {
+    // Heuristic 1: the bucket wraps the year boundary. Treat `year` as the
+    // end's year; the start is one calendar year earlier.
+    resolvedYear = year - 1;
+  } else {
+    // Heuristic 2: detect a stale prior-year header in a current-year sync.
+    const startUtc = Date.UTC(year, startMonth - 1, startDay);
+    const cutoffUtc = syncDate.getTime() + 7 * 24 * 60 * 60 * 1000;
+    if (startUtc > cutoffUtc) {
+      resolvedYear = year - 1;
+    } else {
+      resolvedYear = year;
+    }
+  }
+
+  const mm = String(startMonth).padStart(2, '0');
+  const dd = String(startDay).padStart(2, '0');
+  return `${resolvedYear}-${mm}-${dd}`;
 }
 
 /**
@@ -210,7 +274,7 @@ async function loadVideoUrlIndex(campusId) {
  * Sync one tab.
  * @returns {Promise<{tab:string, dataRows:number, matched:number, written:number, unmatched:Array, skipped?:string}>}
  */
-async function syncTab({ tabName, sheetId, year, campusId, videoIndex, dryRun }) {
+async function syncTab({ tabName, sheetId, year, syncDate, campusId, videoIndex, dryRun }) {
   // A1 range escapes a single-quoted tab title by doubling internal quotes.
   const escaped = tabName.replace(/'/g, "''");
   const range = `'${escaped}'!A1:Z2000`;
@@ -231,7 +295,10 @@ async function syncTab({ tabName, sheetId, year, campusId, videoIndex, dryRun })
 
   const header = rows[headerIdx];
   // Columns 0,1 are Platform + Post Link; columns 2..N are weekly buckets.
-  const weekDates = header.slice(2).map((h) => parseWeekHeader(h, year));
+  // syncDate threaded through so parseWeekHeader can apply its
+  // future-detection heuristic against a stable reference (a January 2026
+  // sync seeing a leftover "11/14-11/21" header lands on 2025).
+  const weekDates = header.slice(2).map((h) => parseWeekHeader(h, year, syncDate));
 
   const upserts = [];
 
@@ -349,6 +416,10 @@ async function run() {
   const videoIndex = await loadVideoUrlIndex(campusId);
   console.log(`[sync] indexed ${videoIndex.size} videos with post_url set\n`);
 
+  // One sync-time reference point shared across all tabs so wrap-detection
+  // and future-detection are stable for the whole run.
+  const syncDate = new Date();
+
   const allUnmatched = [];
   let totalMatched = 0;
   let totalWritten = 0;
@@ -356,7 +427,7 @@ async function run() {
 
   for (const tab of tabs) {
     try {
-      const r = await syncTab({ tabName: tab, sheetId, year, campusId, videoIndex, dryRun });
+      const r = await syncTab({ tabName: tab, sheetId, year, syncDate, campusId, videoIndex, dryRun });
       const skip = r.skipped ? ` [skipped: ${r.skipped}]` : '';
       console.log(
         `[sync] ${tab.padEnd(20)} rows=${String(r.dataRows).padStart(3)} ` +

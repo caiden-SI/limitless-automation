@@ -488,6 +488,122 @@ async function test9_DuplicatePostUrlDetection() {
   assert(referencesBoth, `sample must reference both seeded ids; got ${JSON.stringify(samples)}`);
 }
 
+async function test11_ParseWeekHeaderCrossYear() {
+  // Codex review #2 fix: parseWeekHeader must infer the start year from
+  // both the header range AND the sync date, so a January sync seeing
+  // leftover prior-year headers (or a wrap-the-boundary header) lands
+  // the start on the correct calendar year.
+  const { parseWeekHeader } = require('../scripts/sync-performance-tracker');
+
+  const jan5_2026 = new Date('2026-01-05T00:00:00Z');
+  const may4_2026 = new Date('2026-05-04T00:00:00Z');
+
+  // Wrap branch: end_month < start_month → start in (year - 1).
+  assert.strictEqual(
+    parseWeekHeader('12/27-1/3', 2026, jan5_2026),
+    '2025-12-27',
+    'wrap-the-boundary header: 12/27-1/3 with year=2026 → 2025-12-27'
+  );
+
+  // Current week, no decrement.
+  assert.strictEqual(
+    parseWeekHeader('1/3-1/10', 2026, jan5_2026),
+    '2026-01-03',
+    'current-year first week: 1/3-1/10 with year=2026 → 2026-01-03'
+  );
+
+  // Future-detection branch: start parses far past sync+7d → decrement.
+  assert.strictEqual(
+    parseWeekHeader('11/14-11/21', 2026, jan5_2026),
+    '2025-11-14',
+    'stale prior-year header: 11/14-11/21 visible in Jan 2026 → 2025-11-14'
+  );
+
+  // Mid-year sync, normal headers (no decrement either way).
+  assert.strictEqual(
+    parseWeekHeader('2/6-2/13', 2026, may4_2026),
+    '2026-02-06',
+    'mid-year past header: 2/6-2/13 in May 2026 → 2026-02-06'
+  );
+  assert.strictEqual(
+    parseWeekHeader('4/23-4/30', 2026, may4_2026),
+    '2026-04-23',
+    'recent past header: 4/23-4/30 in May 2026 → 2026-04-23'
+  );
+
+  // Existing happy-path forms must still work.
+  assert.strictEqual(
+    parseWeekHeader('1/1/-2/6', 2026, may4_2026),
+    '2026-01-01',
+    'extra-slash form: 1/1/-2/6 → 2026-01-01'
+  );
+  assert.strictEqual(
+    parseWeekHeader('?-2/6', 2026, may4_2026),
+    null,
+    'unparseable header rejected'
+  );
+  assert.strictEqual(
+    parseWeekHeader('', 2026, may4_2026),
+    null,
+    'empty header rejected'
+  );
+
+  // syncDate must be a Date — caller-supplied, no implicit fallback.
+  let threw = false;
+  try {
+    parseWeekHeader('2/6-2/13', 2026);
+  } catch {
+    threw = true;
+  }
+  assert(threw, 'parseWeekHeader must throw when syncDate is omitted');
+}
+
+async function test12_CanonicalizeAllowlistParity() {
+  // Codex review #2 fix: both canonicalize functions reject non-HTTP(S)
+  // schemes, malformed inputs, and empty hosts. They must agree on every
+  // case so the agent's lookup index and the sync's lookup keys can't
+  // drift.
+  const { canonicalizeUrl: syncCanon } = require('../scripts/sync-performance-tracker');
+  const agentCanon = profileViews.canonicalizePostUrl;
+
+  const cases = [
+    { in: 'javascript:alert(1)', out: null, why: 'javascript: protocol blocked' },
+    { in: 'mailto:test@example.com', out: null, why: 'mailto: protocol blocked' },
+    { in: 'http:example.com/path', out: null, why: 'malformed http: with no // rejected' },
+    { in: '//example.com/foo', out: null, why: 'protocol-relative URL rejected' },
+    { in: 'not a url at all', out: null, why: 'free text rejected' },
+    {
+      in: 'https://www.tiktok.com/@a/video/123?x=1',
+      out: 'https://www.tiktok.com/@a/video/123',
+      why: 'happy path still works',
+    },
+    { in: 'https://', out: null, why: 'empty host rejected' },
+    { in: '', out: null, why: 'empty string rejected' },
+    { in: null, out: null, why: 'null rejected' },
+    { in: undefined, out: null, why: 'undefined rejected' },
+  ];
+
+  for (const c of cases) {
+    const sync = syncCanon(c.in);
+    const agent = agentCanon(c.in);
+    assert.strictEqual(
+      sync,
+      c.out,
+      `[sync] ${JSON.stringify(c.in)} → ${JSON.stringify(sync)} (expected ${JSON.stringify(c.out)}; ${c.why})`
+    );
+    assert.strictEqual(
+      agent,
+      c.out,
+      `[agent] ${JSON.stringify(c.in)} → ${JSON.stringify(agent)} (expected ${JSON.stringify(c.out)}; ${c.why})`
+    );
+    assert.strictEqual(
+      sync,
+      agent,
+      `parity: ${JSON.stringify(c.in)} produced sync=${JSON.stringify(sync)} agent=${JSON.stringify(agent)}`
+    );
+  }
+}
+
 async function test10_NumericStringViewCountAndInvalidShapes() {
   // Codex review fix 4: matchScrapedItems coerces numeric-string viewCount
   // into a number, but rejects null/undefined/non-numeric strings/missing
@@ -539,6 +655,8 @@ async function main() {
   await runTest('8. Sync preflight refuses on apify-lineage', test8_SyncPreflightRefusesOnApifyLineage);
   await runTest('9. Duplicate post_url detection logs warning', test9_DuplicatePostUrlDetection);
   await runTest('10. Numeric-string viewCount + invalid shapes', test10_NumericStringViewCountAndInvalidShapes);
+  await runTest('11. parseWeekHeader cross-year inference', test11_ParseWeekHeaderCrossYear);
+  await runTest('12. canonicalize allowlist parity (sync ↔ agent)', test12_CanonicalizeAllowlistParity);
 
   console.log(`\n${pass}/${pass + fail + skipped} ran  (passed=${pass}, failed=${fail}, skipped=${skipped})`);
   return fail === 0;
