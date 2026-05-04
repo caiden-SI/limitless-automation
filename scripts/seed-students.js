@@ -27,17 +27,12 @@ const { supabase } = require('../lib/supabase');
 
 const AUSTIN_CAMPUS_ID = '0ba4268f-f010-43c5-906c-41509bc9612f';
 
-// Source of truth for the Austin student roster as of Session 24.
+// Source of truth for the Austin student roster.
 // Handles populated from the Content Performance Tracker (per-student tab
 // post URLs revealed the @handles for TikTok and the username paths for
-// X/YouTube). Instagram /p/ post URLs do not expose a handle, so:
-//   - Geetesh, Reuben, Stella, Maddie: handle confirmed by Caiden from
-//     external knowledge.
-//   - Austin Way: instagram handle "austinway" entered as Caiden's
-//     proposed value, NOT confirmed in the tracker (his sole IG post
-//     was an anonymous /p/ link). The Profile Views Agent will surface
-//     it as an unmatched / empty profile if the handle is wrong, with
-//     no destructive consequence.
+// X/YouTube). Instagram /p/ post URLs do not expose a handle; those were
+// filled from external knowledge — Geetesh, Reuben, Stella, Maddie, and
+// Austin Way (austinway_, corrected from the unconfirmed "austinway").
 const STUDENTS = [
   { name: 'Alex Mathews',    handle_tiktok: 'berryaiplushies', handle_instagram: 'berryaiplushies' },
   { name: 'Jackson Price',   handle_tiktok: 'llimepcrepair1',  handle_instagram: 'llimecrepair' },
@@ -46,7 +41,7 @@ const STUDENTS = [
   { name: 'Maddie Price',    handle_tiktok: '355themusical',   handle_instagram: '355themusical' },
   { name: 'Geetesh Parelly',                                   handle_instagram: 'geetesh.flowly' },
   { name: 'Stella Grams',    handle_tiktok: 'stella_makes_bank', handle_instagram: 'stellamakesbank' },
-  { name: 'Austin Way',                                        handle_instagram: 'austinway' },
+  { name: 'Austin Way',                                        handle_instagram: 'austinway_' },
   {
     name: 'Alpha High',
     handle_tiktok: 'alphahigh.school',
