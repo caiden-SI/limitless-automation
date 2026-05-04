@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=1600, initial-scale=1" />
+  <title>Limitless Ops — B · Terminal</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,500;1,400;1,500&family=JetBrains+Mono:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <style>
+    html, body, #root { margin: 0; padding: 0; height: 100%; }
+    body { background: #fcfcfa; font-family: "JetBrains Mono", ui-monospace, monospace; }
+    * { box-sizing: border-box; }
+  </style>
+
+  <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel" src="data.jsx"></script>
+  <script type="text/babel" src="core.jsx"></script>
+  <script type="text/babel" src="dir-b.jsx"></script>
+  <script type="text/babel" src="tweaks-panel.jsx"></script>
+
+  <script type="text/babel">
+    const DEFAULTS = /*EDITMODE-BEGIN*/{
+      "scenario": "busy",
+      "theme": "light",
+      "accentHue": 28,
+      "density": "comfortable",
+      "stuckStyle": "hg",
+      "pipelineMode": "compressed",
+      "grainOn": true,
+      "grainIntensity": 0.12
+    }/*EDITMODE-END*/;
+
+    function App() {
+      const [t, setT] = useTweaks(DEFAULTS);
+      const accent = `oklch(0.62 0.16 ${t.accentHue})`;
+      return (
+        <>
+          <div style={{ minHeight: '100vh' }}>
+            <DirB
+              scenario={t.scenario}
+              theme={t.theme}
+              accent={accent}
+              density={t.density}
+              stuckStyle={t.stuckStyle}
+              pipelineMode={t.pipelineMode}
+              grain={t.grainIntensity}
+              grainOn={t.grainOn}
+            />
+          </div>
+          <TweaksPanel title="Tweaks">
+            <TweakSection title="Scenario">
+              <TweakSelect label="Demo state" value={t.scenario} onChange={(v) => setT('scenario', v)}
+                options={[
+                  { value: 'calm', label: 'Calm / healthy' },
+                  { value: 'busy', label: '9 AM scenario' },
+                  { value: 'worst', label: 'Worst case' },
+                ]} />
+              <TweakRadio label="Theme" value={t.theme} onChange={(v) => setT('theme', v)}
+                options={[{ value: 'light', label: 'Light' }, { value: 'dark', label: 'Dark' }]} />
+              <TweakRadio label="Density" value={t.density} onChange={(v) => setT('density', v)}
+                options={[{ value: 'comfortable', label: 'Comfortable' }, { value: 'compact', label: 'Compact' }]} />
+            </TweakSection>
+            <TweakSection title="Pipeline">
+              <TweakSelect label="Layout" value={t.pipelineMode} onChange={(v) => setT('pipelineMode', v)}
+                options={[
+                  { value: 'compressed', label: 'Compressed lanes' },
+                  { value: 'kanban', label: 'Kanban (11 cols)' },
+                  { value: 'list', label: 'List by status' },
+                ]} />
+              <TweakRadio label="Stuck indicator" value={t.stuckStyle} onChange={(v) => setT('stuckStyle', v)}
+                options={[
+                  { value: 'hg', label: '⧗ days' },
+                  { value: 'pulse', label: '● pulse' },
+                  { value: 'stripe', label: '▦ stripe' },
+                ]} />
+            </TweakSection>
+            <TweakSection title="Style">
+              <TweakSlider label="Accent hue" min={0} max={360} step={1} value={t.accentHue} onChange={(v) => setT('accentHue', v)} />
+              <TweakToggle label="Grain background" value={t.grainOn} onChange={(v) => setT('grainOn', v)} />
+              <TweakSlider label="Grain intensity" min={0.02} max={0.3} step={0.01} value={t.grainIntensity} onChange={(v) => setT('grainIntensity', v)} />
+            </TweakSection>
+          </TweaksPanel>
+        </>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+</body>
+</html>

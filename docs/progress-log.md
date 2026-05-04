@@ -1823,3 +1823,234 @@ The April 5 "RUNNING APP" task was sitting at `ready for shooting` with no Dropb
 ### Status
 
 Mac Mini is the production host. Win11 is permanently retired.
+
+---
+
+## Session 21 — May 4, 2026
+
+Closed the loop on the performance-tracker integration started in commit 60d68f8 (`lib/google.js`, `scripts/sync-performance-tracker.js`, `scripts/migrations/2026-05-04-videos-post-url.sql`). The migration was already applied. The dry run reported 126 unmatched post URLs across 9 students — every one of them missing because `videos.post_url` was empty for every pre-pipeline post (none had been processed through ClickUp). This session built the backfill, ran it end to end, fixed one tracker-data robustness gap in the sync, and verified the full performance pipeline produces a real signal.
+
+### Built — `scripts/backfill-post-urls.js`
+
+Standalone backfill that reads `scripts/unmatched-urls.txt` (the list dumped at the bottom of a sync dry run) and inserts one `videos` row per URL with `post_url` set so the next sync resolves.
+
+Per-row logic:
+
+- **Parse** the space-padded `"  StudentName   platform   url"` lines via `split(/\s{2,}/)` — handles internal single-space names (`Alpha High`, `Alex Mathews`) cleanly.
+- **Canonicalize** the URL with the same rule the sync uses (`new URL`, drop `search`/`hash`, lowercase host, strip trailing slash) so both sides hash to the same key.
+- **Match** student by name against `students` for the Austin campus. `student_id = null` is accepted — `Alpha High` is a brand account, and the other 7 student names (Jackson Price, Cruce Sanders, Reuben Runacres, Maddie Price, Geetesh Parelly, Stella Grams, Austin Way) simply weren't seeded yet. Only Alex Mathews matched. Loud warning log lists every unmatched name so the seeding gap is visible.
+- **Title placeholder** = `"{handle} - {Platform}"`. Handle is extracted from the URL: `@<handle>` for TikTok, `<handle>/status` for X, post slug for Instagram (`/reel/<id>` or `/p/<id>`), video id for YouTube. Falls back to a slugified student name. Platform display is title-cased via a small map.
+- **Status** = `dbStatus('posted by client')` → `'POSTED BY CLIENT'`. Mirrors `agents/pipeline.js` line 22.
+- **Idempotency** is in-app: pre-loads existing canonical `post_url`s for the campus into a Set and skips matches. The migration's `videos_post_url_idx` is a non-unique partial index (a unique partial would be needed for a true ON CONFLICT upsert), and the pre-query pattern is the right shape for backfill — re-running never duplicates rows AND never overwrites a more authoritative title that might have been set by the pipeline since.
+
+Inserts in chunks of 100. Logs `backfill_complete` with `inserted / skippedExisting / skippedParse / errors / matchedStudents / unmatchedStudents`.
+
+### Run results
+
+- 126 lines parsed, 126 rows prepared, 126 inserted, 0 skipped, 0 errors.
+- 1 student matched (Alex Mathews); 8 student names landed with `student_id = null` as expected.
+- `agent_logs` row written.
+
+### Patch — `scripts/sync-performance-tracker.js` resilience to duplicate weekly headers
+
+Re-ran the sync without `--dry-run`. 8/9 tabs landed cleanly (1566 rows), but the Reuben Runacres tab failed:
+
+```
+performance upsert failed: ON CONFLICT DO UPDATE command cannot affect row a second time
+```
+
+Cause: the tab's header row has `"4/16-4/23"` twice (columns 13 and 14). Both columns parse to the same `week_of`, so the upsert chunk contained two rows with the same `(video_id, platform, week_of)` conflict key — Postgres rejects that in a single statement.
+
+Fix: dedupe the upserts array by the conflict key right before chunking, last write wins. Equal snapshots collapse to one (observed in this case), and even when divergent, the rightmost column is the most recently filled. New `result.collapsedDupKeys` field tracks the count for visibility but doesn't surface in normal logging — sync stays quiet on the happy path.
+
+After the patch: 9/9 tabs landed, 1579 rows written, 0 unmatched.
+
+### Verified — Performance Agent end-to-end
+
+Manually triggered `agents/performance.runAll()`. Real Claude analysis over the 1579 weekly rows produced one `performance_signals` row for `week_of=2026-05-04`:
+
+- **summary**: "TikTok is dramatically outperforming other platforms with 5x higher average views, driven primarily by AI/tech content and branded partnerships. Instagram is severely underperforming and needs strategic refocus..."
+- **top_hooks** / **top_formats** / **top_topics** populated with view-count-weighted patterns (talking-head 25k avg; AI/Tech 734k avg; branded-content 45k avg).
+- **raw_output** preserves `recommendations` and `underperforming_patterns` (the table doesn't have dedicated columns for those today; they live inside `raw_output`).
+
+This is the first signal generated against real tracker data. Treat the specific recommendations as illustrative — the volume of underlying rows (1579) is well above the threshold below which Claude hedges, but the diagnosis is one weekly snapshot, not a calibration baseline.
+
+### Files changed
+
+- `scripts/backfill-post-urls.js` (new, 232 lines)
+- `scripts/sync-performance-tracker.js` (+17 / -3 — dedup before chunking)
+- `docs/progress-log.md` (this entry)
+
+### What's Next
+
+1. **Seed the missing 7 students.** Backfill landed those rows with `student_id = null`. As-is, the dashboard's per-student rollups won't surface their videos. Add them to `students` (campus_id = Austin), then run a one-shot UPDATE to populate `student_id` on the existing backfilled `videos` rows by `student_name` match.
+2. **Add `recommendations` and `underperforming_patterns` columns to `performance_signals`** (or accept that they live inside `raw_output` indefinitely). The dashboard currently can't render them as first-class fields.
+3. **Move `videos.post_url` into the live pipeline.** Today, the only path to populating `post_url` is this backfill. The pipeline should set it when a status flips to `posted by client` (likely from a ClickUp custom field). Until then, every newly posted video reappears in the next sync's unmatched list.
+4. **Consider a unique partial index on `(campus_id, post_url) WHERE post_url IS NOT NULL`** if the pipeline writes post_urls — it would convert the backfill's pre-query pattern into a true ON CONFLICT upsert and remove a small race window if two callers ever raced to set the same URL.
+
+---
+
+## Session 22 — May 4, 2026
+
+Closed two of Session 21's "What's Next" items: seeded the 7 missing students and linked the orphan `videos` rows, then added a `posted by client` handler to the Pipeline Agent so `videos.post_url` is populated automatically going forward.
+
+### Seeded — `scripts/seed-students.js` (new)
+
+Inserts the 7 Austin students who had pre-pipeline content but never came through onboarding: Jackson Price, Cruce Sanders, Reuben Runacres, Maddie Price, Geetesh Parelly, Stella Grams, Austin Way. "Alpha High" is intentionally excluded — it's a brand account, and its 58 videos legitimately stay at `student_id = null`.
+
+After insert, the script links existing backfilled `videos` rows by exact-name match scoped to `student_id IS NULL`, so it never overwrites a student_id already set by the pipeline. Both halves are idempotent — re-running prints SKIP for existing students and links zero rows on the second pass.
+
+Run results: 7 students inserted, 37 videos linked (Jackson Price 18, Geetesh Parelly 6, Stella Grams 5, Cruce Sanders 4, Maddie Price 2, Reuben Runacres 1, Austin Way 1). Counter for the videos table after: 68 student-attributed (31 Alex Mathews + 37 newly linked) and 58 brand (Alpha High), summing to the full 126 backfilled rows.
+
+### Built — Pipeline Agent: `posted by client` → `videos.post_url`
+
+`agents/pipeline.js` `handleStatusChange` now routes `posted by client` to a new `recordPostUrl(taskId, campusId)`:
+
+- **Source order:** ClickUp custom field (when `CLICKUP_POST_URL_FIELD_ID` is set and that field is non-empty on the task) → task `text_content` → task `description`. First hit wins. Custom field is the cleanest signal but a dedicated field doesn't yet exist in Scott's setup, so the body-scan fallback is what production will use day one.
+- **URL filter:** `extractPostUrlFromText` returns the first URL whose host matches `tiktok.com | instagram.com | youtube.com | youtu.be | x.com | twitter.com | facebook.com`. A stray Dropbox or `f.io` URL in the same body is skipped — the description scan won't mistake a Frame.io review link for a posted-content link.
+- **Canonicalization:** `canonicalizePostUrl` mirrors the rule the backfill and the performance-tracker sync use (drop query/hash, lowercase host, strip trailing slash) so a `post_url` written here matches a tracker row exactly. Three copies of the same 10-line helper now exist; consolidating into a `lib/url.js` is on the table once a fourth caller appears.
+- **Idempotency:** if the canonicalized URL matches the existing `videos.post_url`, skip the write and log `post_url_unchanged`. If it changed, log `post_url_replaced` with the previous value. Otherwise, log `post_url_recorded`.
+- **No URL found** → `post_url_record_skipped` (warning, no throw). The editor may not have pasted yet, and the next webhook replay or manual re-trigger can pick it up.
+
+`.env.example` got `CLICKUP_POST_URL_FIELD_ID=` (empty by default) with an inline note documenting the fallback chain.
+
+### Files changed
+
+- `scripts/seed-students.js` (new, 100 lines)
+- `agents/pipeline.js` (+138 / -2 — switch case, `recordPostUrl`, `extractPostUrlFromText`, `canonicalizePostUrl`, three new exports)
+- `.env.example` (+4 lines — `CLICKUP_POST_URL_FIELD_ID` with comment)
+- `docs/progress-log.md` (this entry)
+
+### Verified
+
+- `node --check` clean on both changed files.
+- Sanity check on the URL helpers: 3/3 canonicalization cases pass, description scanner correctly skips Dropbox/`f.io` and picks the first platform URL, returns null on empty / no-match input.
+- Database state: `videos.student_id` populated for all 68 student-attributed rows; 58 Alpha High brand rows correctly remain null.
+
+End-to-end exercise of `recordPostUrl` against a real ClickUp task is intentionally deferred — the function mirrors `syncFrameioLink` line-for-line in shape (custom-field read, fallback, canonicalize, idempotent write, log), and `syncFrameioLink` is production-tested. First production firing on a real `posted by client` flip will surface any real-world description shapes the regex misses.
+
+### What's Next
+
+The Session 21 "What's Next" list still has two open items:
+
+1. **Add `recommendations` and `underperforming_patterns` columns to `performance_signals`** (or accept that they live inside `raw_output` indefinitely). The dashboard currently can't render them as first-class fields.
+2. **Consider a unique partial index on `(campus_id, post_url) WHERE post_url IS NOT NULL`** — now that the pipeline writes post_urls live, the race window has gone from theoretical to plausible.
+
+---
+
+## Session 23 — May 4, 2026
+
+Closed the brand-account gap from Session 22. 58 backfilled videos for Alpha High (the school's own social presence) had been left at `student_id = null` because the seed script intentionally excluded brand accounts. This session added a `students.is_brand_account` discriminator, seeded Alpha High as a brand row with its TikTok / Instagram handles, linked the 58 orphan videos, and drafted the Profile Views Agent workflow spec the user described in `workflows/profile-views.md`.
+
+### Schema — `students.is_brand_account`
+
+`scripts/migrations/2026-05-04-students-is-brand-account.sql` (new, applied by Caiden in Supabase SQL Editor):
+
+```sql
+ALTER TABLE students ADD COLUMN IF NOT EXISTS is_brand_account boolean NOT NULL DEFAULT false;
+CREATE INDEX IF NOT EXISTS students_is_brand_account_idx ON students (campus_id) WHERE is_brand_account = true;
+```
+
+Why a column over special-casing names: the dashboard, the Profile Views Agent, and any future per-student-vs-per-brand reporting can branch on a boolean instead of a string compare against `"Alpha High"`. Default `false` so every existing row stays a person; only Alpha High flips true.
+
+### Seed — Alpha High brand row + 58 video links
+
+`scripts/seed-students.js` refactored from a string-name list to an object array, each entry carrying optional `handle_tiktok`, `handle_instagram`, `is_brand_account`. Backwards compatible: the 7 human students still seed identically (skip-on-exists), and the new Alpha High entry inserts with all four extra fields. Run results:
+
+- 7 human students: SKIP (already seeded in Session 22).
+- Alpha High: inserted as id `1d2736e0-6191-45bb-8675-f793b8d11dc8` with `handle_tiktok = handle_instagram = "alphahigh.school"` and `is_brand_account = true`.
+- 58 backfilled videos linked by exact `student_name = "Alpha High"` match scoped to `student_id IS NULL`. Final state: 0 `videos` rows have `post_url IS NOT NULL AND student_id IS NULL` for the Austin campus. All 126 backfilled videos are now student-attributed (Alex Mathews 31, Alpha High 58, Jackson Price 18, Geetesh Parelly 6, Stella Grams 5, Cruce Sanders 4, Maddie Price 2, Reuben Runacres 1, Austin Way 1).
+
+### Drafted — `workflows/profile-views.md` (new)
+
+Workflow spec for the Profile Views Agent the user described, written in the same template as `workflows/scripting-agent.md`. Captures every build decision the user made:
+
+- **Trigger:** `0 9 * * 4` (Thursday 9 AM). Cron-only; no webhook path.
+- **Inputs:** `students.handle_tiktok` / `handle_instagram` per student (brand and human alike); existing `videos.post_url` index for URL-to-video matching; existing `performance` rows for cumulative-to-delta arithmetic.
+- **Tools:** existing `tools/scraper.scrapeProfileVideos(profileUrl, platform, 20)` (already used by the Onboarding Agent's Section 3); single new file `agents/profile-views.js` for orchestration.
+- **Friday-aligned `week_of`:** computed by `mostRecentFriday(now)` — the Friday on or before today. Sanity-checked against weekday inputs before the spec landed (Thu 4/30 → 4/24, Thu 5/7 → 5/1, Fri 5/8 → 5/8, Sun 5/10 → 5/8). Matches Scott's sheet header alignment so `sync-performance-tracker.js` and the agent write to the same Friday-keyed buckets.
+- **Cumulative-vs-delta semantics:** the user's "subtract last row" instruction is mathematically correct only for the Week 1 → Week 2 transition, when the last row is itself a cumulative. The spec generalizes to "subtract `SUM(view_count)` over all prior weeks for `(video_id, platform)`" — that running sum equals the most-recently-recorded cumulative, since every subsequent row is a delta. First scrape with no prior rows writes `view_count = current_cumulative` (matches the user's "first week writes cumulative" rule). Negative deltas (deleted post / metric reset) floor at 0 with a single per-run warning log.
+- **URL matching:** scraped video URL canonicalized with the same `pipeline.canonicalizePostUrl` rule and looked up against an in-memory `videos.post_url` index. Unmatched URLs aggregate into a single per-run summary entry rather than per-video logs (mirrors `sync-performance-tracker.js`).
+- **Idempotency:** `ON CONFLICT (video_id, platform, week_of) DO UPDATE`. Same-day re-runs are safe. The same dedupe-before-chunk defense `sync-performance-tracker.js` got in Session 21 is in this spec from day one.
+- **Edge cases enumerated:** no handles, Apify outage, unmatched URL, negative delta, sheet/agent week_of collision (last write wins, both observations describe the same week's reality), brand vs human, multiple handles (out of scope v1), pre-existing sheet row at the same `week_of` (overwritten).
+- **Test plan:** `scripts/test-profile-views-agent.js` covering Friday-alignment unit cases, real Apify scrape against Alpha High (high-volume signal), first-week vs delta path, unmatched aggregation, negative-delta floor, cron registration smoke. Skips gracefully when `APIFY_API_TOKEN` unset.
+- **Out of scope v1:** YouTube, multiple handles per platform, historical sheet backfill (owned by `sync-performance-tracker.js`), dashboard brand-vs-human rollups (owned by the dashboard).
+
+The spec explicitly notes the cumulative-vs-delta arithmetic correction and the rationale for it, so the next implementer doesn't ship a literal "subtract last row" that breaks at week 3.
+
+### Files changed
+
+- `scripts/migrations/2026-05-04-students-is-brand-account.sql` (new — applied)
+- `scripts/seed-students.js` (refactored to object array, +Alpha High entry)
+- `workflows/profile-views.md` (new — full SOP)
+- `docs/progress-log.md` (this entry)
+
+### What's Next
+
+1. **Build the Profile Views Agent.** Spec is in `workflows/profile-views.md`. The dependencies it needs are all present (handles set on Alpha High, post_url backfilled, unique constraint live, scraper exists). Estimated scope: one new `agents/profile-views.js`, one new test, a server.js cron registration line behind `APIFY_API_TOKEN`, and an `architecture.md` matrix update. Brand-voice / self-heal patterns are reused without modification.
+2. **Populate handles for the 7 human students** (Jackson Price, Cruce Sanders, Reuben Runacres, Maddie Price, Geetesh Parelly, Stella Grams, Austin Way). Without handles, the Profile Views Agent will skip them. The path forward is either onboarding completion (which extracts handles from answers) or a one-shot UPDATE with manually collected handles.
+3. **Add `recommendations` and `underperforming_patterns` columns to `performance_signals`** (carried forward from Session 21).
+4. **Consider a unique partial index on `(campus_id, post_url) WHERE post_url IS NOT NULL`** (carried forward).
+
+---
+
+## Session 24 — May 4, 2026
+
+Populated `students.handle_tiktok` / `handle_instagram` for the 8 active Austin creators so the Profile Views Agent (when built) has handles to scrape on Thursday. Also reshaped `scripts/seed-students.js` from a one-shot inserter into an idempotent reconciler.
+
+### Handle source
+
+Pulled from the Content Performance Tracker's per-student tabs (TikTok URLs expose `@<handle>`; X URLs expose `<handle>` between `/` and `/status`). Instagram URLs in the tracker are anonymous `/p/<slug>` or `/reel/<slug>` and don't carry the handle, so those were filled from values Caiden provided directly.
+
+| Student | TikTok | Instagram | Source |
+|---|---|---|---|
+| Alex Mathews | `berryaiplushies` | `berryaiplushies` | Tracker URLs |
+| Jackson Price | `llimepcrepair1` | `llimecrepair` | Tracker (TikTok), Caiden (IG) |
+| Cruce Sanders | `cruce.saunders` | `cruce_sanders` | Tracker (TikTok), Caiden (IG) |
+| Reuben Runacres | — | `reubenrunacres` | Caiden |
+| Maddie Price | `355themusical` | `355themusical` | Tracker (TikTok), Caiden (IG) |
+| Geetesh Parelly | — | `geetesh.flowly` | Caiden |
+| Stella Grams | `stella_makes_bank` | `stellamakesbank` | Tracker (TikTok), Caiden (IG) |
+| Austin Way | — | `austinway` | **Unconfirmed** — Caiden's proposed value; tracker has only an anonymous `/p/<slug>` post link, so the handle isn't visible there. If wrong, the future Profile Views Agent will scrape an empty profile for Austin Way's IG and skip; no destructive consequence. Operator can correct via a one-line UPDATE. |
+| Alpha High (brand) | `alphahigh.school` | `alphahigh.school` | Session 23 (already set) |
+
+### `seed-students.js` reshape
+
+Was: insert-only, skip-on-exists. Now: idempotent reconciler.
+
+- **Insert** if no row with that name exists in the campus.
+- **Fill** any `FILLABLE_FIELDS` (`handle_tiktok`, `handle_instagram`, `handle_youtube`, `is_brand_account`) on an existing row where the live value is `NULL` and the seed has a value.
+- **Skip with WARN** on field-level conflict (live value is non-null AND differs from the seed). The operator decides — automatic overwrite is the wrong default for fields a student may have updated themselves through onboarding.
+- **No-op** on perfect match.
+
+This means `STUDENTS` in the script becomes the single source of truth for the static parts of student rows. Re-running is safe forever.
+
+Run results this session: `inserted=0`, `filled=8` (Alex + the 7 humans), `no-change=1` (Alpha High), `conflicts=0`. The video-linking pass found 0 new rows to link (everything was already linked in Sessions 22 / 23), confirming idempotency.
+
+### Files changed
+
+- `scripts/seed-students.js` (+62 / -19 — fill-don't-overwrite, conflict warning, FILLABLE_FIELDS list, handles in STUDENTS)
+- `docs/progress-log.md` (this entry)
+
+### Branch published
+
+After this session's commit, `feature/dashboard-scoring-fix` was pushed to origin and merged into `main`. Branch carried Sessions 21–24:
+
+- Session 21 — backfill 126 pre-pipeline post URLs + sync-tracker dedupe-before-upsert defense
+- Session 22 — seed 7 humans + pipeline writes `post_url` on `posted by client`
+- Session 23 — `students.is_brand_account` schema + Alpha High brand row + `workflows/profile-views.md` SOP
+- Session 24 — handles populated, seed-students.js reshaped to idempotent reconciler
+
+The merge into main is the deliverable handoff for the production Mac Mini's pull-and-restart loop.
+
+### What's Next
+
+Carried forward (unchanged from Session 23):
+
+1. **Build the Profile Views Agent** per `workflows/profile-views.md`. Dependencies — handles, post_url backfill, unique constraint, scraper — are all live now.
+2. **Confirm `austinway` Instagram handle** out-of-band (a 30-second visit to `instagram.com/austinway`). If wrong, one UPDATE fixes it.
+3. **Add `recommendations` and `underperforming_patterns` columns to `performance_signals`** (Session 21 carry).
+4. **Consider a unique partial index on `(campus_id, post_url) WHERE post_url IS NOT NULL`** (Session 22 carry).
+
+
+

@@ -49,6 +49,10 @@ async function handleStatusChange(taskId, newStatus, campusId) {
         await createShareLink(taskId, campusId);
         break;
 
+      case 'posted by client':
+        await recordPostUrl(taskId, campusId);
+        break;
+
       default:
         // No automated action for this status
         break;
@@ -739,6 +743,149 @@ async function handleFootageDetected(taskId, campusId) {
   });
 }
 
+/**
+ * Strip query/hash/trailing-slash; lowercase host. Same canonicalization
+ * the backfill and performance-tracker sync use, so a `post_url` written
+ * here matches a tracker row and a backfill row hashes to the same key.
+ */
+function canonicalizePostUrl(url) {
+  if (!url) return null;
+  const raw = String(url).trim();
+  if (!raw) return null;
+  try {
+    const u = new URL(raw);
+    u.search = '';
+    u.hash = '';
+    return `${u.protocol}//${u.host.toLowerCase()}${u.pathname}`.replace(/\/+$/, '');
+  } catch {
+    return raw.replace(/[?#].*$/, '').replace(/\/+$/, '');
+  }
+}
+
+const POST_URL_HOSTS = /^(?:[\w-]+\.)*(?:tiktok\.com|instagram\.com|youtube\.com|youtu\.be|x\.com|twitter\.com|facebook\.com)$/i;
+
+/**
+ * First platform URL found in a free-text body (ClickUp description or
+ * `text_content`). Editors paste posted-content links into the task body
+ * when no dedicated custom field exists. Match URLs greedily and filter
+ * to known social hosts so a stray Dropbox or Frame.io link in the same
+ * description doesn't get mistaken for the post.
+ */
+function extractPostUrlFromText(text) {
+  if (!text) return null;
+  const matches = String(text).match(/https?:\/\/[^\s<>")\]]+/g);
+  if (!matches) return null;
+  for (const raw of matches) {
+    try {
+      const u = new URL(raw);
+      if (POST_URL_HOSTS.test(u.host)) return raw;
+    } catch {
+      // skip malformed URL, continue scanning
+    }
+  }
+  return null;
+}
+
+/**
+ * On `posted by client` status, write the public post URL onto videos.post_url
+ * so the performance-tracker sync can match it.
+ *
+ * Source order: ClickUp custom field (if `CLICKUP_POST_URL_FIELD_ID` is set
+ * AND that field is non-empty on the task) → task `text_content` → task
+ * `description`. First hit wins. If no URL is found, log a warning and
+ * no-op — the editor may not have pasted yet, and an in-flight retry can
+ * still pick it up.
+ *
+ * Idempotent: if the canonicalized URL matches `videos.post_url` already,
+ * skip the write. Never throws on a missing/empty URL — that's an editor
+ * input gap, not a pipeline failure.
+ */
+async function recordPostUrl(taskId, campusId) {
+  const { video, campus } = await resolveTask(taskId, campusId);
+  const fieldId = process.env.CLICKUP_POST_URL_FIELD_ID;
+
+  const task = await clickup.getTask(taskId);
+
+  let source = null;
+  let rawUrl = null;
+
+  if (fieldId) {
+    const field = (task.custom_fields || []).find((f) => f.id === fieldId);
+    const v = typeof field?.value === 'string' ? field.value.trim() : null;
+    if (v) {
+      rawUrl = v;
+      source = 'custom_field';
+    }
+  }
+
+  if (!rawUrl) {
+    const fromTextContent = extractPostUrlFromText(task.text_content);
+    if (fromTextContent) {
+      rawUrl = fromTextContent;
+      source = 'text_content';
+    } else {
+      const fromDescription = extractPostUrlFromText(task.description);
+      if (fromDescription) {
+        rawUrl = fromDescription;
+        source = 'description';
+      }
+    }
+  }
+
+  if (!rawUrl) {
+    await log({
+      campusId: campus.id,
+      agent: AGENT_NAME,
+      action: 'post_url_record_skipped',
+      status: 'warning',
+      payload: {
+        taskId,
+        videoId: video.id,
+        reason: fieldId
+          ? 'CLICKUP_POST_URL_FIELD_ID empty AND no platform URL in task body'
+          : 'CLICKUP_POST_URL_FIELD_ID unset AND no platform URL in task body',
+      },
+    });
+    return;
+  }
+
+  const canonical = canonicalizePostUrl(rawUrl);
+  if (!canonical) {
+    await log({
+      campusId: campus.id,
+      agent: AGENT_NAME,
+      action: 'post_url_record_skipped',
+      status: 'warning',
+      payload: { taskId, videoId: video.id, reason: 'URL did not canonicalize', rawUrl, source },
+    });
+    return;
+  }
+
+  const existing = canonicalizePostUrl(video.post_url);
+  if (existing === canonical) {
+    await log({
+      campusId: campus.id,
+      agent: AGENT_NAME,
+      action: 'post_url_unchanged',
+      payload: { taskId, videoId: video.id, postUrl: canonical, source },
+    });
+    return;
+  }
+
+  const { error: uErr } = await supabase
+    .from('videos')
+    .update({ post_url: canonical, updated_at: new Date().toISOString() })
+    .eq('id', video.id);
+  if (uErr) throw new Error(`Supabase update failed (videos.post_url): ${uErr.message}`);
+
+  await log({
+    campusId: campus.id,
+    agent: AGENT_NAME,
+    action: existing ? 'post_url_replaced' : 'post_url_recorded',
+    payload: { taskId, videoId: video.id, postUrl: canonical, previous: existing, source },
+  });
+}
+
 module.exports = {
   handleStatusChange,
   handleFootageDetected,
@@ -750,4 +897,7 @@ module.exports = {
   createShareLink,
   scanPendingFootage,
   scanPendingFootageAll,
+  recordPostUrl,
+  canonicalizePostUrl,
+  extractPostUrlFromText,
 };
