@@ -650,11 +650,14 @@
 .lim-kpi__label { font-size: 9px; font-weight: 800; letter-spacing: 0.14em; color: var(--ink-3); margin-top: 4px; }
 
 /* ── IN-APP TOOLBAR (.lim-iat) ──────────────────────────────────────────── */
+/* Lives in normal document flow at the bottom of .lim-stage. Only visible
+ * when the user scrolls past the last content section. The earlier
+ * fixed-bottom-right placement was always-visible and felt like persistent
+ * UI clutter; pulling it into the flow keeps display toggles available
+ * without competing for attention with the data above. */
 .lim-iat {
-  position: fixed;
-  bottom: 18px; right: 20px;
-  z-index: 50;
-  display: flex; align-items: center; gap: 22px;
+  display: inline-flex; align-items: center; gap: 22px;
+  margin: 48px auto 0;
   padding: 10px 14px;
   background: var(--bg-2);
   backdrop-filter: blur(10px) saturate(140%);
@@ -665,6 +668,7 @@
   letter-spacing: 0.12em;
   color: var(--ink);
   pointer-events: auto;
+  align-self: center;
 }
 .lim-iat-pair { display: inline-flex; align-items: center; gap: 12px; }
 .lim-iat-opt {
@@ -711,7 +715,7 @@
 @media (max-width: 600px) {
   .lim-iat {
     gap: 10px; padding: 7px 10px;
-    bottom: 12px; right: 12px;
+    margin: 32px auto 0;
     font-size: 9px; letter-spacing: 0.08em;
     flex-wrap: wrap; max-width: calc(100% - 24px);
   }

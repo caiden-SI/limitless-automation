@@ -100,19 +100,21 @@ export default function Pipeline() {
         </div>
 
         <PipelineKanban campusId={campusId} />
-      </div>
 
-      <Toolbar
-        theme={theme}
-        bg={bg}
-        mono={mono}
-        alpha={alpha}
-        onTheme={setTheme}
-        onBg={setBg}
-        onMono={setMono}
-        onAlpha={setAlpha}
-        compact={isPhone}
-      />
+        {/* Toolbar lives in flow at the end of .lim-pipe-stage so it only
+         * appears once the user scrolls past the kanban. */}
+        <Toolbar
+          theme={theme}
+          bg={bg}
+          mono={mono}
+          alpha={alpha}
+          onTheme={setTheme}
+          onBg={setBg}
+          onMono={setMono}
+          onAlpha={setAlpha}
+          compact={isPhone}
+        />
+      </div>
     </div>
   );
 }

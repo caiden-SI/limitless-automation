@@ -18,8 +18,8 @@ import {
 import { actionItems, isStuck, systemPulse } from '../lib/health';
 import { buildCssVars, useDisplayPrefs } from '../lib/theme';
 // Lazy so three.js code-splits out of the main bundle. We also gate the
-// mount on `grainEnabled`, so mobile / toggle-off / amber-or-red sessions
-// never trigger the dynamic import in the first place.
+// mount on `grainEnabled`, so mobile / toggle-off sessions never trigger
+// the dynamic import in the first place.
 const GrainBackground = lazy(() => import('../components/GrainBackground'));
 import Toolbar from '../components/Toolbar';
 import OpsHeader from '../components/OpsHeader';
@@ -119,13 +119,11 @@ export default function Ops() {
     };
   }, [videos.data]);
 
-  // Pause grain when the System Pulse has any non-green cell. Spec keeps the
-  // brief's "motion behind triage is fatiguing" rule.
-  const sysIsClean = pulse.cells.every((c) => c.state === 'green');
-  const grainEnabled = bg === 'on' && !isPhone && sysIsClean;
-
-  // Tweaks panel was dropped from production per project requirements; the
-  // four toolbar toggles are the entire surface area now.
+  // Grain is purely user-controlled via the toolbar toggle. The mobile gate
+  // stays — three.js is heavy and phones don't have the screen budget.
+  // The pulse-cell coupling that used to suppress grain on amber/red was
+  // dropped: it surprised users who expected the toggle to work.
+  const grainEnabled = bg === 'on' && !isPhone;
 
   return (
     <div
@@ -260,19 +258,21 @@ export default function Ops() {
             </div>
           </div>
         )}
-      </div>
 
-      <Toolbar
-        theme={theme}
-        bg={bg}
-        mono={mono}
-        alpha={alpha}
-        onTheme={setTheme}
-        onBg={setBg}
-        onMono={setMono}
-        onAlpha={setAlpha}
-        compact={isPhone}
-      />
+        {/* Toolbar lives in flow at the end of .lim-stage so it only
+         * appears once the user scrolls past the last data section. */}
+        <Toolbar
+          theme={theme}
+          bg={bg}
+          mono={mono}
+          alpha={alpha}
+          onTheme={setTheme}
+          onBg={setBg}
+          onMono={setMono}
+          onAlpha={setAlpha}
+          compact={isPhone}
+        />
+      </div>
     </div>
   );
 }
