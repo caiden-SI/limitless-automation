@@ -235,6 +235,11 @@ async function syncTab({ tabName, sheetId, year, campusId, videoIndex, dryRun })
         platform,
         view_count: Math.round(n),
         week_of: week,
+        // Provenance for the dual-writer scheme. The Profile Views Agent
+        // (Thursday cron) reads `source` to detect cold-start vs steady-state
+        // and to exclude its own anchor rows from sum_prior arithmetic.
+        // See scripts/migrations/2026-05-04-performance-source.sql.
+        source: 'sheet',
       });
     }
   }

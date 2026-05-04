@@ -48,11 +48,18 @@ async function run(campusId) {
     fourWeeksAgo.setDate(fourWeeksAgo.getDate() - 28);
     const weekOf = getMondayDate(); // Current week identifier
 
-    // 2. Query performance data for last 4 weeks
+    // 2. Query performance data for last 4 weeks.
+    //
+    // The `source IN ('sheet', 'apify')` filter excludes 'apify_anchor'
+    // rows, which carry absorbed lifetime cumulative (not a weekly delta)
+    // and would otherwise show up here as a one-off viral-week spike for
+    // every video in the table. See workflows/profile-views.md
+    // §"Performance Agent prerequisite" for the rationale.
     const { data: perfData, error: pErr } = await supabase
       .from('performance')
-      .select('video_id, platform, view_count, week_of')
+      .select('video_id, platform, view_count, week_of, source')
       .eq('campus_id', campusId)
+      .in('source', ['sheet', 'apify'])
       .gte('created_at', fourWeeksAgo.toISOString())
       .order('view_count', { ascending: false });
 

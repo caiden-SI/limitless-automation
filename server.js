@@ -16,6 +16,7 @@ const performance = require('./agents/performance');
 const scripting = require('./agents/scripting');
 const pipeline = require('./agents/pipeline');
 const fireflies = require('./agents/fireflies');
+const profileViews = require('./agents/profile-views');
 
 const { execFile } = require('child_process');
 
@@ -166,22 +167,17 @@ app.use((err, _req, res, _next) => {
   res.status(500).json({ error: 'Internal server error' });
 });
 
-app.listen(PORT, () => {
-  console.log(`[server] Limitless webhook server listening on port ${PORT}`);
-  log({ agent: 'server', action: `started on port ${PORT}` });
-
-  // Startup health checks
-  execFile('ffmpeg', ['-version'], (err) => {
-    if (err) {
-      console.error('[server] WARNING: FFmpeg is not installed — QA LUFS checks will fail closed');
-      log({ agent: 'server', action: 'health_check_ffmpeg', status: 'warning', payload: { available: false } });
-    } else {
-      console.log('[server] FFmpeg: available');
-      log({ agent: 'server', action: 'health_check_ffmpeg', payload: { available: true } });
-    }
-  });
-
-  // Register scheduled agent jobs
+/**
+ * Register every cron job this server owns. Extracted from the listen
+ * callback so the test harness can drive it with a stub scheduler and
+ * assert which jobs are wired.
+ *
+ * Env-gated jobs (fireflies, profile-views) check their flags here so the
+ * test sees the gate behavior — passing a stub scheduler with the env
+ * unset must not register the gated job, and setting the env must register
+ * it. See `scripts/test-profile-views-agent.js` test #7.
+ */
+function registerScheduledJobs(scheduler) {
   // Research Agent — daily at 6 AM
   scheduler.register('research-agent', '0 6 * * *', research.runAll);
   // Performance Analysis Agent — every Monday at 7 AM
@@ -200,7 +196,36 @@ app.listen(PORT, () => {
   } else {
     console.log("[server] fireflies-agent cron NOT registered — set FIREFLIES_CRON_ENABLED=true after Scott disables fireflies_sync.py (workflows/fireflies-integration.md)");
   }
-});
+
+  // Profile Views Agent — Thursday 9 AM. Env-gated on APIFY_API_TOKEN —
+  // without the token the scraper would throw on first call, so we'd
+  // rather not register the cron at all. See workflows/profile-views.md.
+  if (process.env.APIFY_API_TOKEN) {
+    scheduler.register('profile-views-agent', '0 9 * * 4', profileViews.runAll);
+  } else {
+    console.log('[server] profile-views-agent cron NOT registered — set APIFY_API_TOKEN to enable Thursday 9AM Apify scrapes (workflows/profile-views.md)');
+  }
+}
+
+if (require.main === module) {
+  app.listen(PORT, () => {
+    console.log(`[server] Limitless webhook server listening on port ${PORT}`);
+    log({ agent: 'server', action: `started on port ${PORT}` });
+
+    // Startup health checks
+    execFile('ffmpeg', ['-version'], (err) => {
+      if (err) {
+        console.error('[server] WARNING: FFmpeg is not installed — QA LUFS checks will fail closed');
+        log({ agent: 'server', action: 'health_check_ffmpeg', status: 'warning', payload: { available: false } });
+      } else {
+        console.log('[server] FFmpeg: available');
+        log({ agent: 'server', action: 'health_check_ffmpeg', payload: { available: true } });
+      }
+    });
+
+    registerScheduledJobs(scheduler);
+  });
+}
 
 // Catch unhandled promise rejections — hand to self-heal before PM2 restarts.
 // .catch(() => {}) prevents a leaked rejection from re-entering this same
@@ -209,3 +234,5 @@ process.on('unhandledRejection', (reason) => {
   const err = reason instanceof Error ? reason : new Error(String(reason));
   selfHeal.handle(err, { agent: 'server', action: 'unhandled_rejection' }).catch(() => {});
 });
+
+module.exports = { app, registerScheduledJobs };
