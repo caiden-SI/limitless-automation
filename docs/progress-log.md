@@ -1887,3 +1887,52 @@ This is the first signal generated against real tracker data. Treat the specific
 2. **Add `recommendations` and `underperforming_patterns` columns to `performance_signals`** (or accept that they live inside `raw_output` indefinitely). The dashboard currently can't render them as first-class fields.
 3. **Move `videos.post_url` into the live pipeline.** Today, the only path to populating `post_url` is this backfill. The pipeline should set it when a status flips to `posted by client` (likely from a ClickUp custom field). Until then, every newly posted video reappears in the next sync's unmatched list.
 4. **Consider a unique partial index on `(campus_id, post_url) WHERE post_url IS NOT NULL`** if the pipeline writes post_urls — it would convert the backfill's pre-query pattern into a true ON CONFLICT upsert and remove a small race window if two callers ever raced to set the same URL.
+
+---
+
+## Session 22 — May 4, 2026
+
+Closed two of Session 21's "What's Next" items: seeded the 7 missing students and linked the orphan `videos` rows, then added a `posted by client` handler to the Pipeline Agent so `videos.post_url` is populated automatically going forward.
+
+### Seeded — `scripts/seed-students.js` (new)
+
+Inserts the 7 Austin students who had pre-pipeline content but never came through onboarding: Jackson Price, Cruce Sanders, Reuben Runacres, Maddie Price, Geetesh Parelly, Stella Grams, Austin Way. "Alpha High" is intentionally excluded — it's a brand account, and its 58 videos legitimately stay at `student_id = null`.
+
+After insert, the script links existing backfilled `videos` rows by exact-name match scoped to `student_id IS NULL`, so it never overwrites a student_id already set by the pipeline. Both halves are idempotent — re-running prints SKIP for existing students and links zero rows on the second pass.
+
+Run results: 7 students inserted, 37 videos linked (Jackson Price 18, Geetesh Parelly 6, Stella Grams 5, Cruce Sanders 4, Maddie Price 2, Reuben Runacres 1, Austin Way 1). Counter for the videos table after: 68 student-attributed (31 Alex Mathews + 37 newly linked) and 58 brand (Alpha High), summing to the full 126 backfilled rows.
+
+### Built — Pipeline Agent: `posted by client` → `videos.post_url`
+
+`agents/pipeline.js` `handleStatusChange` now routes `posted by client` to a new `recordPostUrl(taskId, campusId)`:
+
+- **Source order:** ClickUp custom field (when `CLICKUP_POST_URL_FIELD_ID` is set and that field is non-empty on the task) → task `text_content` → task `description`. First hit wins. Custom field is the cleanest signal but a dedicated field doesn't yet exist in Scott's setup, so the body-scan fallback is what production will use day one.
+- **URL filter:** `extractPostUrlFromText` returns the first URL whose host matches `tiktok.com | instagram.com | youtube.com | youtu.be | x.com | twitter.com | facebook.com`. A stray Dropbox or `f.io` URL in the same body is skipped — the description scan won't mistake a Frame.io review link for a posted-content link.
+- **Canonicalization:** `canonicalizePostUrl` mirrors the rule the backfill and the performance-tracker sync use (drop query/hash, lowercase host, strip trailing slash) so a `post_url` written here matches a tracker row exactly. Three copies of the same 10-line helper now exist; consolidating into a `lib/url.js` is on the table once a fourth caller appears.
+- **Idempotency:** if the canonicalized URL matches the existing `videos.post_url`, skip the write and log `post_url_unchanged`. If it changed, log `post_url_replaced` with the previous value. Otherwise, log `post_url_recorded`.
+- **No URL found** → `post_url_record_skipped` (warning, no throw). The editor may not have pasted yet, and the next webhook replay or manual re-trigger can pick it up.
+
+`.env.example` got `CLICKUP_POST_URL_FIELD_ID=` (empty by default) with an inline note documenting the fallback chain.
+
+### Files changed
+
+- `scripts/seed-students.js` (new, 100 lines)
+- `agents/pipeline.js` (+138 / -2 — switch case, `recordPostUrl`, `extractPostUrlFromText`, `canonicalizePostUrl`, three new exports)
+- `.env.example` (+4 lines — `CLICKUP_POST_URL_FIELD_ID` with comment)
+- `docs/progress-log.md` (this entry)
+
+### Verified
+
+- `node --check` clean on both changed files.
+- Sanity check on the URL helpers: 3/3 canonicalization cases pass, description scanner correctly skips Dropbox/`f.io` and picks the first platform URL, returns null on empty / no-match input.
+- Database state: `videos.student_id` populated for all 68 student-attributed rows; 58 Alpha High brand rows correctly remain null.
+
+End-to-end exercise of `recordPostUrl` against a real ClickUp task is intentionally deferred — the function mirrors `syncFrameioLink` line-for-line in shape (custom-field read, fallback, canonicalize, idempotent write, log), and `syncFrameioLink` is production-tested. First production firing on a real `posted by client` flip will surface any real-world description shapes the regex misses.
+
+### What's Next
+
+The Session 21 "What's Next" list still has two open items:
+
+1. **Add `recommendations` and `underperforming_patterns` columns to `performance_signals`** (or accept that they live inside `raw_output` indefinitely). The dashboard currently can't render them as first-class fields.
+2. **Consider a unique partial index on `(campus_id, post_url) WHERE post_url IS NOT NULL`** — now that the pipeline writes post_urls live, the race window has gone from theoretical to plausible.
+
