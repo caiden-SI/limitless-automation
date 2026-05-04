@@ -746,16 +746,48 @@
   background: color-mix(in oklab, var(--ink) 38%, transparent);
 }
 
-/* ── GLASS MODE (data-glass='on' on root when grain is on) ──────────────── */
+/* ── GLASS MODE (data-glass='on' on root when grain toggle is on) ────────
+ * Goal: every major content surface is a translucent frosted pane that
+ * lets the WebGL grain shader show through. The shader sits at
+ * z-index: -1 inside .lim-root's stacking context.
+ *
+ * Why each rule:
+ *  - .lim-root background is normally var(--bg) (opaque). Within its own
+ *    stacking context, that opaque paint sits beneath the canvas (per
+ *    CSS spec for z<0 children of positioned parents) — so the canvas
+ *    paints OVER lim-root's bg. But everywhere else (lim-stage, cards)
+ *    paints over the canvas. To let the grain be visible inside the card
+ *    area, the cards themselves must be translucent. Making lim-root
+ *    transparent isn't strictly required here, but it gives the canvas
+ *    cleaner air to render against (so light-mode grain doesn't tint
+ *    blueish from the dark lim-root bleed).
+ *  - --bg-2 / --bg-3 are already alpha-aware in glass mode (lib/theme.js
+ *    buildCssVars() returns rgba with the toolbar's opacity-dial alpha,
+ *    default 65). Cards use those tokens, so removing the prior
+ *    "transparent !important" override on inner cards lets each card
+ *    render its own translucent surface.
+ *  - backdrop-filter on every surface gives the frosted-glass effect
+ *    instead of just a tinted overlay. Compounding is mild because the
+ *    outer section wrapper is left transparent (no double frost).
+ */
+[data-glass='on'].lim-root { background: transparent; }
+
+/* Outer <section> wrappers are transparent in glass mode — section
+ * headers ("AGENTS", "PIPELINE" etc.) float over the grain directly.
+ * Each inner card frosts its own area, so we don't compound opacity
+ * across nesting levels. */
 [data-glass='on'] .lim-stage > section,
 [data-glass='on'] .lim-bottom-col > section {
-  background: var(--bg-2);
-  backdrop-filter: blur(10px) saturate(140%);
-  -webkit-backdrop-filter: blur(10px) saturate(140%);
+  background: transparent;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
   padding: 18px 20px 20px;
   margin-bottom: 14px;
 }
 
+/* Every major content surface frosts its own area. Backgrounds come
+ * from var(--bg-2) (alpha-aware in glass mode) plus the per-cell color
+ * modifiers (e.g. .lim-cpv-hero--amber tints --bg-2 with amber). */
 [data-glass='on'] .lim-cpv-hero,
 [data-glass='on'] .lim-cpv-agent,
 [data-glass='on'] .lim-cpv-lane,
@@ -769,27 +801,16 @@
 [data-glass='on'] .lim-cpv-shoot,
 [data-glass='on'] .lim-cpv-int,
 [data-glass='on'] .lim-cpv-activity,
-[data-glass='on'] .lim-cpv-hero-seg,
-[data-glass='on'] .lim-cpv-editor-pip,
 [data-glass='on'] .lim-cpl-pipe-col,
 [data-glass='on'] .lim-c-log,
 [data-glass='on'] .lim-kpi {
-  background: transparent !important;
-  backdrop-filter: none !important;
-  -webkit-backdrop-filter: none !important;
+  backdrop-filter: blur(10px) saturate(140%);
+  -webkit-backdrop-filter: blur(10px) saturate(140%);
 }
 
-[data-glass='on'] .lim-cpv-agent:hover,
-[data-glass='on'] .lim-cpv-lane:hover,
-[data-glass='on'] .lim-cpv-card:hover,
-[data-glass='on'] .lim-cpv-editor:hover,
-[data-glass='on'] .lim-cpv-health:hover,
-[data-glass='on'] .lim-cpv-shoot:hover,
-[data-glass='on'] .lim-cpv-int.is-open,
-[data-glass='on'] .lim-cpl-pipe-col:hover {
-  background: color-mix(in oklab, var(--ink) 5%, transparent) !important;
-}
-
+/* Borders re-establish each card's edge against the noisy grain. Inner
+ * cards (.lim-cpv-card, .lim-c-log) use a softer border since they nest
+ * inside other cards. */
 [data-glass='on'] .lim-cpv-agent,
 [data-glass='on'] .lim-cpv-lane,
 [data-glass='on'] .lim-cpv-stat,
@@ -799,12 +820,13 @@
 [data-glass='on'] .lim-cpv-shoot,
 [data-glass='on'] .lim-cpv-int,
 [data-glass='on'] .lim-cpl-pipe-col {
-  border: 1px solid var(--rule) !important;
+  border: 1px solid var(--rule);
 }
 [data-glass='on'] .lim-cpv-card,
 [data-glass='on'] .lim-c-log {
-  border: 1px solid color-mix(in oklab, var(--rule) 60%, transparent) !important;
+  border: 1px solid color-mix(in oklab, var(--rule) 60%, transparent);
 }
-[data-glass='on'] .lim-cpv-editor-pip { border: 1px solid var(--rule) !important; }
-[data-glass='on'] .lim-cpv-editor-pip.is-on { background: var(--ink) !important; }
-[data-glass='on'] .lim-cpv-editor-pip.is-over { background: var(--red) !important; }
+/* Editor capacity pips: tiny boxes that need a hairline border to stand
+ * out against the noisy glass background. The is-on and is-over states
+ * keep their solid fills (var(--ink), var(--red)) so they read clearly. */
+[data-glass='on'] .lim-cpv-editor-pip { border: 1px solid var(--rule); }
