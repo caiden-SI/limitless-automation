@@ -7,7 +7,7 @@
 //   ping_pm2     — pm2 jlist; any non-online process is an error
 //   ping_ffmpeg  — ffmpeg -version exit code
 //   ping_disk    — df -k / capacity (% used)
-//   ping_memory  — os.totalmem / os.freemem
+//   ping_memory  — memory_pressure free % on macOS, os.freemem fallback elsewhere
 //
 // Each row uses agent_name='health' so the dashboard's
 // get_campus_system_health_summary RPC can filter by action and read the
@@ -31,8 +31,11 @@ const CAMPUS_ID = process.env.CAMPUS_ID || '0ba4268f-f010-43c5-906c-41509bc9612f
 const PING_TIMEOUT_MS = 5000;
 const DISK_AMBER_PCT = 85;
 const DISK_RED_PCT = 95;
-const MEMORY_AMBER_PCT = 85;
-const MEMORY_RED_PCT = 95;
+// Memory thresholds are expressed as *free* percentage (lower = worse) because
+// macOS-style "used" is misleading: the compressor and inactive/cached pages
+// count as used but are reclaimable on demand.
+const MEMORY_FREE_AMBER_PCT = 20;
+const MEMORY_FREE_RED_PCT = 10;
 
 async function pingTunnel() {
   if (!TUNNEL_URL) {
@@ -149,35 +152,65 @@ async function pingDisk() {
   }
 }
 
-function pingMemory() {
-  const total = os.totalmem();
-  const free = os.freemem();
-  if (total <= 0) {
+async function pingMemory() {
+  // On macOS, os.freemem() returns only truly-idle pages — the compressor and
+  // inactive/cached pages are counted as "used" even though the kernel can
+  // reclaim them on demand, which produced a steady 95-100%-used false alarm.
+  // memory_pressure is what macOS itself uses to decide pressure events, so
+  // its "System-wide memory free percentage" is the honest signal.
+  let freePct = null;
+  if (process.platform === 'darwin') {
+    try {
+      const { stdout } = await execAsync('memory_pressure -Q', { timeout: PING_TIMEOUT_MS });
+      const match = stdout.match(/System-wide memory free percentage:\s*(\d+)\s*%/);
+      if (match) {
+        freePct = parseInt(match[1], 10);
+      }
+    } catch {
+      // memory_pressure missing or failed — fall through to os.freemem fallback.
+    }
+  }
+  if (freePct === null) {
+    const total = os.totalmem();
+    const free = os.freemem();
+    if (total <= 0) {
+      return {
+        action: 'ping_memory',
+        status: 'error',
+        error_message: 'unable to read totalmem',
+      };
+    }
+    freePct = Math.round((free / total) * 100);
+  }
+  if (freePct < MEMORY_FREE_RED_PCT) {
     return {
       action: 'ping_memory',
       status: 'error',
-      error_message: 'unable to read totalmem',
+      error_message: `free ${freePct}% · pressure critical`,
     };
   }
-  const used = total - free;
-  const pct = Math.round((used / total) * 100);
-  if (pct >= MEMORY_RED_PCT) {
-    return { action: 'ping_memory', status: 'error', error_message: `memory ${pct}%` };
+  if (freePct < MEMORY_FREE_AMBER_PCT) {
+    return {
+      action: 'ping_memory',
+      status: 'warning',
+      error_message: `free ${freePct}% · pressure approaching`,
+    };
   }
-  if (pct >= MEMORY_AMBER_PCT) {
-    return { action: 'ping_memory', status: 'warning', error_message: `memory ${pct}%` };
-  }
-  return { action: 'ping_memory', status: 'success', error_message: `memory ${pct}%` };
+  return {
+    action: 'ping_memory',
+    status: 'success',
+    error_message: `free ${freePct}%`,
+  };
 }
 
 async function main() {
-  const [tunnel, pm2, ffmpeg, disk] = await Promise.all([
+  const [tunnel, pm2, ffmpeg, disk, memory] = await Promise.all([
     pingTunnel(),
     pingPm2(),
     pingFfmpeg(),
     pingDisk(),
+    pingMemory(),
   ]);
-  const memory = pingMemory();
 
   const rows = [tunnel, pm2, ffmpeg, disk, memory].map((r) => ({
     campus_id: CAMPUS_ID,
