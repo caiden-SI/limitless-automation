@@ -137,6 +137,7 @@ Per CLAUDE.md, agents never call each other. They communicate through Supabase r
 | Onboarding | `students`, `onboarding_sessions`, `campuses` | `students` (claude_project_context, onboarding_completed_at, handle_*), `onboarding_sessions` (every turn), `agent_logs` |
 | Scripting (stub) | `students`, `performance_signals`, `research_library` (planned) | `videos`, `processed_calendar_events` (planned) |
 | Fireflies | `students` (email + name match), `campuses`, `meeting_transcripts` (dedup), `created_action_items` (dedup ledger + null-task retry, stores `action_item_text` so retries replay the original wording) | `meeting_transcripts`, `created_action_items`, `agent_logs` |
+| Profile Views | `students` (handles), `videos` (post_url index), `performance` (Apify-lineage rows for delta basis via `source IN ('apify','apify_anchor')`), `campuses` (active) | `performance` (`source = 'apify'` or `'apify_anchor'`), `agent_logs` |
 
 The `webhook_inbox` table is written and read by `handlers/clickup.js` only. It is not an agent table.
 
@@ -151,6 +152,7 @@ Registered in `server.js` via `lib/scheduler.js` on server boot.
 | `research-agent` | `0 6 * * *` | Daily 6 AM. Calls `research.runAll()` per active campus. | `server.js` line 172 |
 | `performance-agent` | `0 7 * * 1` | Every Monday 7 AM. Calls `performance.runAll()` per active campus. | `server.js` line 174 |
 | `fireflies-agent` | `0 21 * * *` | Nightly 9 PM. Pulls last-48h transcripts → `meeting_transcripts`, extracts action items via Claude → ClickUp tasks (`idea` status). **Wired but env-gated**: only registers when `FIREFLIES_CRON_ENABLED=true`. Flip on cutover night per `workflows/fireflies-integration.md` §"Cutover" — running this alongside Scott's `fireflies_sync.py` produces duplicate tasks. | `server.js` (gated) |
+| `profile-views-agent` | `0 9 * * 4` | Thursday 9 AM. Calls `profile-views.runAll()`. Per active campus: scrapes each `students.handle_tiktok` / `handle_instagram` (20 most recent items per profile via Apify), matches scraped URLs against `videos.post_url`, writes one `performance` row per match keyed on Friday-aligned `week_of`. First scrape per `(video, platform)` plants an `apify_anchor` row carrying lifetime cumulative; subsequent weeks write `apify` deltas. **Env-gated** on `APIFY_API_TOKEN`. Spec: `workflows/profile-views.md`. | `server.js` (gated) |
 
 No Scripting Agent or Onboarding Agent cron is registered. The Onboarding Agent runs on demand from the `/onboard` page, not on a schedule. The Fireflies Agent is built and its cron is registered conditionally; OpenClaw remains spec-only.
 

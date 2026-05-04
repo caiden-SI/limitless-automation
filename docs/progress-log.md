@@ -2052,5 +2052,242 @@ Carried forward (unchanged from Session 23):
 3. **Add `recommendations` and `underperforming_patterns` columns to `performance_signals`** (Session 21 carry).
 4. **Consider a unique partial index on `(campus_id, post_url) WHERE post_url IS NOT NULL`** (Session 22 carry).
 
+---
+
+## Session 25 — May 4, 2026
+
+Built the Profile Views Agent per `workflows/profile-views.md`. The spec was the source of truth — every behavior in the implementation traces back to a clause in the SOP, including the `apify_anchor` semantics that resolve the sheet→Apify boundary cleanly. End-to-end test (real Apify, real Supabase) passes 7/7.
+
+### Pre-existing prerequisites (already in flight when this session started)
+
+These three artifacts arrived from a prior out-of-band edit and were committed alongside the agent:
+
+- **`scripts/migrations/2026-05-04-performance-source.sql`** — adds `performance.source text NOT NULL DEFAULT 'sheet'` plus a `(video_id, platform, source)` index. Already applied in the live DB. The migration's header comment captures the rationale: the agent's delta math must distinguish its own anchor + delta rows from sheet-sync rows, otherwise the first Apify scrape against any sheet-tracked video would absorb pre-tracking views into one anomalous spike.
+- **`tools/scraper.js scrapeProfileVideos`** — return shape now includes `viewCount`, `likes`, `shares`, `author` matching `scrapeTikTok` / `scrapeInstagram`. The agent reads `viewCount` per scraped item; the test harness asserts the field is present at both source-grep level (regression guard) and runtime (when `APIFY_API_TOKEN` is set).
+- **`scripts/sync-performance-tracker.js`** — sheet writes now carry `source: 'sheet'` explicitly, so existing rows have provenance from day one.
+
+### Built — `agents/profile-views.js`
+
+Single new agent file (~360 lines). Structure mirrors `agents/research.js` and `agents/fireflies.js`:
+
+- **`mostRecentFriday(now)`** — most recent Friday on or before `now`, UTC, formatted YYYY-MM-DD. Same Friday alignment Scott's sheet uses, same format `sync-performance-tracker.js` writes, so both writers' rows land on the same `(video_id, platform, week_of)` unique key.
+- **`canonicalizePostUrl(url)`** — drop query/hash, lowercase host, strip trailing slash. Inline duplicate of the same rule in `agents/pipeline`, `scripts/sync-performance-tracker`, `scripts/backfill-post-urls`. Four copies now; consolidating into a `lib/url.js` would deviate from the spec and is deferred until the canonicalization rule itself needs to change.
+- **`buildProfileUrl(platform, handle)`** — strips a defensive leading `@`, builds the public profile URL. Throws on unsupported platform.
+- **`loadStudentsWithHandles(campusId)`** — loads campus students and filters in JS. PostgREST's `.or()` syntax around `not.is.null` is fragile; the result set is tiny enough that the JS filter is the safer move.
+- **`loadVideoUrlIndex(campusId)`** — `videos.post_url` lookup index keyed by canonical URL.
+- **`getDeltaBasis(videoId, platform, weekOf)`** — sums `view_count` across rows where `source IN ('apify','apify_anchor') AND week_of < weekOf`. The strict `<` filter is what makes same-day re-runs idempotent: a row already written today is excluded from the basis. Sheet rows are excluded by source so the anchor's absorbed cumulative is never double-counted.
+- **`matchScrapedItems(items, videoIndex)`** — filters scraped items to those with valid URL + numeric `viewCount`, looks up canonical URL in the index, returns `{matches, unmatched, invalid}`. Pure function — exported for the §5 unmatched-aggregation test.
+- **`buildUpsertRowForMatch({campusId, videoId, platform, currentCumulative, weekOf})`** — given a single match, runs the cold-start vs steady-state branch and returns the row + diagnostics (`hasPriorApify`, `sumApifyPrior`, `flooredNegative`). The test harness drives this to exercise each path with forced inputs.
+- **`run(campusId)`** — full flow: load students + URL index, scrape per profile × platform, match, compute upsert rows, dedup by `(video_id, platform, week_of)` last-write-wins, upsert in chunks of 500, emit per-run summary log. Outer try/catch hands to `selfHeal.handle` with a single retry, mirroring sibling agents.
+- **`runAll()`** — iterates active campuses; per-campus errors are swallowed inside `run()` so one bad campus doesn't abort the cron.
+- **`warnHandlelessWithVideos(campusId)`** — surfaces the actionable case the spec calls out: a student with NO handles AND existing `videos.post_url` rows. Two-query batched check, per-student warning logs.
+
+### Built — `scripts/test-profile-views-agent.js`
+
+7 tests, all passing:
+
+```
+PASS  1. Friday alignment unit cases
+      scraped=20 matched=17 unmatched=3 wrote apify_anchor view_count=1331 (cold_start=true, sum_prior=0)
+PASS  2. Real Apify scrape against Alpha High TikTok
+PASS  3. Cold-start / sheet boundary / steady-state paths
+PASS  4. scrapeProfileVideos returns viewCount (source check)
+PASS  5. matchScrapedItems unmatched aggregation
+PASS  6. Negative delta floors at 0
+PASS  7. Cron registration smoke test
+```
+
+Test 2 hit Alpha High's TikTok profile via Apify and matched 17/20 scraped items against the 58 backfilled `videos.post_url` rows. The 3 unmatched are likely either posts more recent than the Session 21 backfill or older posts not in Apify's "20 most recent" return. The agent wrote one `apify_anchor` row at `view_count=1331` for the chosen match — a real lifetime cumulative observation, intentionally not torn down (it's genuine data, idempotent on re-run).
+
+Test 3 exercised all three branches:
+
+- **Cold-start** (no prior rows): write `apify_anchor` with `view_count = 5000` (cumulative).
+- **Sheet→Apify boundary** (a `'sheet'` row exists at `weekOf=2026-04-24` with `view_count=1500`, then we run for `weekOf=2026-05-01` with cumulative=5000): assert the anchor lands at 5000 (NOT `5000 - 1500`), the sheet row is untouched, and the Performance Agent prerequisite filter (`source IN ('sheet','apify')`) returns the sheet row only — anchor excluded.
+- **Steady-state** (anchor at 5000, then run with cumulative=7500 the following week): assert delta of 2500 is written with `source='apify'`.
+
+Synthetic videos for tests 3, 5, 6 are tagged with `__perf_views_test_` titles and cleaned up in `teardown()`. Real Apify data from test 2 is left in place.
+
+### Built — `agents/performance.js` filter
+
+One block changed in the 4-week perf query:
+
+```js
+.from('performance')
+.select('video_id, platform, view_count, week_of, source')
+.eq('campus_id', campusId)
+.in('source', ['sheet', 'apify'])     // exclude 'apify_anchor'
+.gte('created_at', fourWeeksAgo.toISOString())
+```
+
+`apify_anchor` rows carry absorbed lifetime cumulative (not weekly deltas) and would otherwise show up as one-off viral-week spikes for every video the agent has touched. The filter is a no-op until the first profile-views cron writes anchor rows — until then every existing `performance` row carries `source = 'sheet'`.
+
+### Built — `server.js` refactor
+
+Extracted `registerScheduledJobs(scheduler)` from the listen callback. The function accepts any scheduler with a `register(name, schedule, fn)` shape, so test #7 drives it with a stub and asserts `'profile-views-agent'` is registered with `0 9 * * 4` when `APIFY_API_TOKEN` is set, and is NOT registered when unset.
+
+`app.listen` is now wrapped in `if (require.main === module)` so importing `server.js` for the registration test doesn't start a real listener. `module.exports = { app, registerScheduledJobs }` exposes the test seam.
+
+The new cron registration is env-gated:
+
+```js
+if (process.env.APIFY_API_TOKEN) {
+  scheduler.register('profile-views-agent', '0 9 * * 4', profileViews.runAll);
+} else {
+  console.log('[server] profile-views-agent cron NOT registered — set APIFY_API_TOKEN to ...');
+}
+```
+
+Same pattern as the fireflies-agent gate, same message shape.
+
+### Files changed
+
+- `agents/profile-views.js` (new)
+- `scripts/test-profile-views-agent.js` (new)
+- `agents/performance.js` (3-line filter addition + 4-line comment)
+- `server.js` (extract `registerScheduledJobs`, wrap `app.listen` in main-module guard, register profile-views-agent)
+- `tools/scraper.js` (Session 24 update — viewCount/likes/shares/author on `scrapeProfileVideos` return shape)
+- `scripts/sync-performance-tracker.js` (writes `source: 'sheet'` to performance rows)
+- `scripts/migrations/2026-05-04-performance-source.sql` (new — applied to live DB)
+- `docs/architecture.md` (agent matrix row, cron table row)
+- `docs/progress-log.md` (this entry)
+
+No additional migrations beyond the three already applied (`2026-05-04-videos-post-url`, `2026-05-04-students-is-brand-account`, `2026-05-04-performance-source`).
+
+### What's Next
+
+1. **Frame.io webhook registration** — Scott to register through the Adobe console (Session 20 carry).
+2. **Fireflies cutover** — `FIREFLIES_CRON_ENABLED=false` in `.env`. Awaiting Scott disabling `fireflies_sync.py` and confirming key parity (Session 18 carry).
+3. **Add `recommendations` and `underperforming_patterns` columns to `performance_signals`** (Session 21 carry).
+4. **Unique partial index on `(campus_id, post_url) WHERE post_url IS NOT NULL`** (Session 22 carry).
+5. **Confirm `austinway_` Instagram handle** out-of-band (Session 24 carry — apply correction if wrong).
+6. **First production Thursday cron run** — once `APIFY_API_TOKEN` is in `.env` on the Mac Mini and the server reboots, the next Thursday at 9 AM the agent fires for real. Watch `agent_logs` for `profile_views_run_complete` and the `anchorsPlanted` / `deltasWritten` split.
+
+### Adversarial review fixes
+
+Codex review on the branch returned 1 critical + 2 high + 1 medium. All four applied in-session before merge.
+
+1. **CRITICAL — sheet upserts could overwrite Apify lineage** (`scripts/sync-performance-tracker.js`).
+
+   The unique key `(video_id, platform, week_of)` is shared by both writers. If the sheet sync ran after Profile Views in the same week, a `'sheet'` upsert would clobber an `apify_anchor` or `apify` row at that key; the next Thursday's `getDeltaBasis` would ignore the new `'sheet'` row and either re-cold-start or undercount the basis — silent corruption that lasts at least one Performance Agent analysis window.
+
+   Fix: a hard-fail preflight `assertNoApifyLineage(campusId)` runs before any tab is read. It queries `performance` for `source IN ('apify','apify_anchor')` scoped to the campus and throws with the exact spec'd message ("Apify-lineage rows detected — sheet sync is decommissioned. ...") if any row is found. Test 8 seeds one `apify_anchor` row and asserts the function refuses. The cleaner architectural fix (include `source` in the conflict key, or partition into separate tables) is on the carry list; until then, this gate is the only thing keeping lineage clean.
+
+2. **HIGH — duplicate `post_url` rows silently collapsed** (`agents/profile-views.js loadVideoUrlIndex`).
+
+   `Map.set` overwrites on duplicate keys. With the unique partial index on `(campus_id, post_url)` still a Session 22 carry, two videos sharing a canonical URL would silently misattribute scraped views to whichever row supabase returned last — invisible to the operator.
+
+   Fix: first-loaded wins, collisions captured into `[{url, kept_id, dropped_id}]` and emitted as a `warning`-status `duplicate_post_urls_detected` log with up to 5 samples after the load completes. Test 9 seeds two videos with the same `post_url`, calls `loadVideoUrlIndex`, asserts the index keeps exactly one of them, and asserts the warning log row's payload references both ids.
+
+3. **HIGH — negative-delta flooring permanently zeroed videos after platform reset** (`agents/profile-views.js` run loop).
+
+   The 0-floor was correct for the bad week but left `sumApifyPrior` permanently inflated. Every subsequent week subtracted against the stale sum, producing 0 deltas indefinitely if the missing views never returned. The single-`warning` log hid state corruption.
+
+   Fix:
+   - Status upgraded `warning` → `error`. The Performance Agent's Monday analysis runs against `agent_logs` enough that an `error` here surfaces faster than a `warning` lost in the noise.
+   - Counter changed from `int++` to `array.push({videoId, platform, currentCumulative, sumApifyPrior})`; the log payload now carries `count` plus `samples: [...]` (first 5).
+   - New `## Operator runbook: negative-delta recovery` section in `workflows/profile-views.md` with the manual recovery SQL (`DELETE FROM performance WHERE video_id = $1 AND platform = $2 AND source IN ('apify','apify_anchor')`) and the rationale for why sheet rows stay.
+   - `TODO (anchor-reset)` filed in a doc-block comment at `getDeltaBasis` describing the longer-term fix — auto-plant a fresh anchor when the negative-delta condition persists for ≥2 consecutive weeks.
+
+4. **MEDIUM — bad Apify item shapes dropped silently** (`agents/profile-views.js matchScrapedItems`).
+
+   The function tracked an `invalid` count internally but `run()` threw it away. A scraper-contract drift (Apify shipping `viewCount` as `null`, an empty string, or a numeric string) looked identical to a low-activity week.
+
+   Fix:
+   - `matchScrapedItems` return shape changed from `invalid: number` to `invalid: Array<{url, viewCount, reason}>` where `reason ∈ {'missing_url', 'invalid_viewCount'}`.
+   - Numeric-string `viewCount` is now coerced via `Number(rawViewCount)` after a typeof guard that explicitly rejects `null` / `undefined` / empty string (since `Number(null)` is `0` — a valid view count we don't want to fabricate).
+   - `run()` propagates `invalid.length` into a new `counters.invalidItems` summary field, and emits a per-profile `profile_views_invalid_items` warning with `studentId, profileUrl, platform, count, sample` (first 3 bad shapes) so contract drift is debuggable from `agent_logs` alone.
+   - Test 10 seeds 7 items covering the legit numeric-string case, all four invalid reasons (null, undefined, non-numeric string, negative), and two missing-url variants (key absent, empty string), asserts 1 match, 0 unmatched, 6 invalid with reasons split 2 missing_url + 4 invalid_viewCount.
+
+### Test status after fixes
+
+`scripts/test-profile-views-agent.js`: 10/10 pass.
+
+```
+PASS  1. Friday alignment unit cases
+PASS  2. Real Apify scrape against Alpha High TikTok
+PASS  3. Cold-start / sheet boundary / steady-state paths
+PASS  4. scrapeProfileVideos returns viewCount (source check)
+PASS  5. matchScrapedItems unmatched aggregation
+PASS  6. Negative delta floors at 0
+PASS  7. Cron registration smoke test
+PASS  8. Sync preflight refuses on apify-lineage
+PASS  9. Duplicate post_url detection logs warning
+PASS  10. Numeric-string viewCount + invalid shapes
+```
+
+### Deliberately deferred
+
+Two items from the review are NOT in this commit; they are proper follow-ups, not in-scope hot fixes:
+
+- **Unique partial index on `(campus_id, post_url) WHERE post_url IS NOT NULL`** — the structural fix for the Fix 2 class. Carry list since Session 22; the warning surface is sufficient until then.
+- **Anchor-reset-on-sustained-negative** — the structural fix for Fix 3's longer-term shape. TODO filed in code; manual runbook covers the gap.
+
+### Files changed (Adversarial review fixes)
+
+- `agents/profile-views.js` — collision detection in `loadVideoUrlIndex`, `negativeDeltaFloored` array + error log, `matchScrapedItems` invalid-shape reporting + numeric-string coercion, per-profile `profile_views_invalid_items` log, `invalidItems` counter, TODO comment at `getDeltaBasis`.
+- `scripts/sync-performance-tracker.js` — `assertNoApifyLineage(campusId)` preflight, called once before the tab loop; exported.
+- `scripts/test-profile-views-agent.js` — 3 new tests (sync preflight refusal, duplicate URL detection, numeric-string + invalid shapes); test 5 updated for the new `invalid` array shape.
+- `workflows/profile-views.md` — new `## Operator runbook: negative-delta recovery` and `## Sheet sync decommission gate` sections.
+- `docs/progress-log.md` — this subsection.
+
+### Second adversarial review fixes
+
+A second Codex pass focused on `lib/google.js` and the parser/canonicalization helpers in `scripts/sync-performance-tracker.js`. Two findings landed; both applied.
+
+1. **HIGH — `parseWeekHeader` misdated cross-year weeks** (`scripts/sync-performance-tracker.js`).
+
+   The original parser stamped every header with `new Date().getFullYear()`, so a January 2026 sync seeing a real boundary header `"12/27-1/3"` would write `week_of = 2026-12-27` (a year in the future). Same problem for any leftover prior-year header (`"11/14-11/21"` visible in January) — silent corruption that breaks same-week conflict behavior and pollutes downstream weekly analysis until cleaned up manually. No adversarial input required; this hits at every calendar rollover.
+
+   Fix: signature changed to `parseWeekHeader(header, year, syncDate)` — `syncDate` is required (no `new Date()` fallback in the parser, so tests pin a stable reference). The regex now captures both start and end M/D. Two heuristics applied in order:
+
+   - **Wrap detection** — if `end_month < start_month`, the range crosses the year boundary; treat `year` as the end year and return start in `year - 1`. Catches `"12/27-1/3"` cleanly.
+   - **Future detection** — otherwise, if the parsed start lands more than 7 days past `syncDate`, decrement by one year. Catches stale prior-year headers like `"11/14-11/21"` lingering in a January sync.
+
+   `syncTab` threads a single `syncDate` (computed once in `run()`) through all per-tab calls so wrap/future inference is stable across the whole run. Test 11 covers all five spec cases (`12/27-1/3`, `1/3-1/10`, `11/14-11/21`, `2/6-2/13`, `4/23-4/30`) plus the existing happy-path forms (`1/1/-2/6`, `?-2/6`, empty) and asserts `syncDate` omission throws.
+
+2. **MEDIUM — `canonicalizeUrl` accepted malformed protocols as matchable keys** (`scripts/sync-performance-tracker.js` and `agents/profile-views.js`).
+
+   Both functions used `new URL()` and a permissive `catch` block that ran a regex fallback against the raw input — Node's URL parser would happily normalize `javascript:alert(1)` into `javascript://alert(1)`, `mailto:test@example.com` into `mailto://test@example.com`, and `http:example.com/path` into `http://example.com/path`, all of which then became lookup keys. A polluted `videos.post_url` could silently match the wrong video.
+
+   Fix: tightened both functions identically.
+
+   - Pre-flight `^https?:\/\/` regex check on the raw input — rejects malformed `http:foo` (no `//`), protocol-relative `//foo`, and free text immediately.
+   - Allowlisted protocols: only `http:` and `https:` accepted.
+   - Empty-host check: `https://` alone returns null (URL parser also throws on this; both paths covered).
+   - Removed the `catch`-block regex fallback that was synthesizing keys from unparseable input.
+
+   Both copies (sync's `canonicalizeUrl`, agent's `canonicalizePostUrl`) are now byte-identical in behavior. Test 12 runs the same 10 cases against both functions and asserts parity, so any future drift would fail loudly.
+
+   `scripts/backfill-post-urls.canonicalizeUrl` and `agents/pipeline.canonicalizePostUrl` are also siblings of this rule but were intentionally left alone this pass — backfill is one-shot and already executed against the old rule (changing it risks divergence with the rows already in DB), and the pipeline copy is on the live write path and warrants its own review pass. Both are noted in code comments for the next time the rule moves.
+
+### Test status after second-review fixes
+
+`scripts/test-profile-views-agent.js`: **12/12 pass**.
+
+```
+PASS  1. Friday alignment unit cases
+PASS  2. Real Apify scrape against Alpha High TikTok
+PASS  3. Cold-start / sheet boundary / steady-state paths
+PASS  4. scrapeProfileVideos returns viewCount (source check)
+PASS  5. matchScrapedItems unmatched aggregation
+PASS  6. Negative delta floors at 0
+PASS  7. Cron registration smoke test
+PASS  8. Sync preflight refuses on apify-lineage
+PASS  9. Duplicate post_url detection logs warning
+PASS  10. Numeric-string viewCount + invalid shapes
+PASS  11. parseWeekHeader cross-year inference     [new]
+PASS  12. canonicalize allowlist parity            [new]
+```
+
+### Files changed (Second adversarial review fixes)
+
+- `scripts/sync-performance-tracker.js` — `parseWeekHeader` signature gains required `syncDate`, with wrap + future-detection heuristics; `canonicalizeUrl` tightened to HTTPS-only with non-empty host; `syncTab` threads `syncDate` through.
+- `agents/profile-views.js` — `canonicalizePostUrl` tightened identically; doc-block notes the two unaudited siblings (`backfill-post-urls`, `pipeline`).
+- `scripts/test-profile-views-agent.js` — 2 new tests (`parseWeekHeader` cross-year, `canonicalize` allowlist parity).
+- `docs/progress-log.md` — this subsection.
+
+`workflows/profile-views.md` was not changed — neither the canonicalization rules nor the parser inference are documented in detail in the spec, so the new behavior doesn't contradict anything written.
+
+
 
 

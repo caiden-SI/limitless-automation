@@ -104,11 +104,15 @@ async function scrapeInstagram(queries, maxResults = 20) {
 
 /**
  * Scrape recent videos from a specific influencer profile.
- * Used by the onboarding agent (Section 3) to auto-fetch transcripts.
+ * Used by the Onboarding Agent (Section 3) for transcript auto-fetch and by
+ * the Profile Views Agent for weekly view-count snapshots — the latter
+ * relies on `viewCount`, `likes`, and `shares` being present in the return
+ * shape, matching `scrapeTikTok` / `scrapeInstagram`.
+ *
  * @param {string} profileUrl - Profile URL or handle (e.g. "https://tiktok.com/@garyvee")
  * @param {'tiktok'|'instagram'} platform - Which platform to scrape
  * @param {number} [maxResults=5] - Max videos to return
- * @returns {Promise<Array<{ url: string, description: string, transcript: string|null, platform: string }>>}
+ * @returns {Promise<Array<{ url: string, description: string, viewCount: number, likes: number, shares: number, transcript: string|null, platform: string, author: string|null }>>}
  */
 async function scrapeProfileVideos(profileUrl, platform, maxResults = 5) {
   if (platform === 'tiktok' || profileUrl.includes('tiktok.com')) {
@@ -122,8 +126,12 @@ async function scrapeProfileVideos(profileUrl, platform, maxResults = 5) {
     return items.map((item) => ({
       url: item.webVideoUrl || item.url || '',
       description: item.text || item.desc || '',
+      viewCount: item.playCount || item.stats?.playCount || 0,
+      likes: item.diggCount || item.stats?.diggCount || 0,
+      shares: item.shareCount || item.stats?.shareCount || 0,
       transcript: item.subtitleText || item.transcript || null,
       platform: 'tiktok',
+      author: item.authorMeta?.name || item.author || null,
     }));
   }
 
@@ -139,8 +147,18 @@ async function scrapeProfileVideos(profileUrl, platform, maxResults = 5) {
       .map((item) => ({
         url: item.url || (item.shortCode ? `https://www.instagram.com/p/${item.shortCode}/` : ''),
         description: item.caption || '',
+        // Instagram's API exposes view counts on Video posts as videoViewCount
+        // (Reels/Videos) or playCount (some endpoints). Fall through to 0 only
+        // when both are missing — typically image posts that slipped past
+        // the type filter above.
+        viewCount: item.videoViewCount || item.playCount || 0,
+        likes: item.likesCount || 0,
+        // Instagram does not surface a per-post share count; record 0 to keep
+        // the return shape aligned with TikTok rather than `undefined`.
+        shares: 0,
         transcript: item.accessibilityCaption || null,
         platform: 'instagram',
+        author: item.ownerUsername || null,
       }));
   }
 
