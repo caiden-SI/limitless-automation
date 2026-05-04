@@ -144,6 +144,39 @@ function findHeaderRow(rows) {
 }
 
 /**
+ * Refuse to run when any Apify-lineage rows exist for the campus.
+ *
+ * Background: `performance` has a single unique key
+ * `(video_id, platform, week_of)` shared by both writers. If this sync
+ * runs after the Profile Views Agent has planted an `apify_anchor` (or
+ * written a steady-state `apify` delta) for the same week, the upsert
+ * here clobbers that row with a `'sheet'` entry. The agent's next run
+ * sees `getDeltaBasis` ignore the `'sheet'` row, falsely re-cold-starts
+ * (or undercounts the basis), and produces wrong deltas for every week
+ * thereafter. The damage is silent and lasts at least one full
+ * Performance Agent analysis window.
+ *
+ * Hard-fail rule: once the Profile Views Agent has written even one
+ * `(apify | apify_anchor)` row for the campus, the sheet sync is
+ * decommissioned. Operator must remove the cron and the script
+ * invocation, or coordinate with the agent owner before re-running.
+ */
+async function assertNoApifyLineage(campusId) {
+  const { data, error } = await supabase
+    .from('performance')
+    .select('id, source')
+    .eq('campus_id', campusId)
+    .in('source', ['apify', 'apify_anchor'])
+    .limit(1);
+  if (error) throw new Error(`apify lineage preflight query failed: ${error.message}`);
+  if (data && data.length > 0) {
+    throw new Error(
+      "Apify-lineage rows detected — sheet sync is decommissioned. Remove the cron and delete this script's invocation, or contact the Profile Views Agent owner before re-running."
+    );
+  }
+}
+
+/**
  * Build a map of canonicalUrl → video record for every video in the campus
  * that has a `post_url` set. The script later does in-memory lookups
  * against this index — one query, many resolutions.
@@ -292,6 +325,14 @@ async function run() {
   if (!sheetId) throw new Error('PERFORMANCE_TRACKER_SHEET_ID is required in .env');
   if (!campusId) throw new Error('PERFORMANCE_TRACKER_CAMPUS_ID is required in .env');
 
+  // Refuse to run if any Apify-lineage rows exist for this campus.
+  // The unique key `(video_id, platform, week_of)` is shared with the
+  // Profile Views Agent, so a sheet upsert at the same week would
+  // overwrite an Apify anchor or delta and break the agent's lineage
+  // arithmetic for every subsequent week. Once Profile Views has touched
+  // the table, the sheet sync is decommissioned.
+  await assertNoApifyLineage(campusId);
+
   const explicitTabs = (process.env.PERFORMANCE_TRACKER_TABS || '')
     .split(',')
     .map((s) => s.trim())
@@ -384,4 +425,5 @@ module.exports = {
   canonicalizeUrl,
   normalizePlatform,
   findHeaderRow,
+  assertNoApifyLineage,
 };

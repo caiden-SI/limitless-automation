@@ -114,11 +114,38 @@ async function loadVideoUrlIndex(campusId) {
     .eq('campus_id', campusId)
     .not('post_url', 'is', null);
   if (error) throw new Error(`videos query failed: ${error.message}`);
+
+  // First-loaded wins on canonical-URL collision so subsequent runs are
+  // deterministic regardless of supabase's row order. Collisions are
+  // logged as warnings — the unique partial index on
+  // `(campus_id, post_url) WHERE post_url IS NOT NULL` is still a carry
+  // item, so silent overwrites would mean cross-student misattribution
+  // until that constraint lands. See Codex review fix 2.
   const m = new Map();
+  const collisions = [];
   for (const v of data || []) {
     const c = canonicalizePostUrl(v.post_url);
-    if (c) m.set(c, v);
+    if (!c) continue;
+    if (m.has(c)) {
+      collisions.push({ url: c, kept_id: m.get(c).id, dropped_id: v.id });
+      continue;
+    }
+    m.set(c, v);
   }
+
+  if (collisions.length > 0) {
+    await log({
+      campusId,
+      agent: AGENT_NAME,
+      action: 'duplicate_post_urls_detected',
+      status: 'warning',
+      payload: {
+        count: collisions.length,
+        sample: collisions.slice(0, 5),
+      },
+    });
+  }
+
   return m;
 }
 
@@ -133,6 +160,14 @@ async function loadVideoUrlIndex(campusId) {
  * The strict `<` filter is what makes same-day re-runs idempotent: a row
  * already written today at `week_of == weekOf` is excluded from the
  * basis, so the next run produces the same delta.
+ *
+ * TODO (anchor-reset): when `current_cumulative < sumApifyPrior` persists
+ * for ≥2 consecutive weeks, the agent should plant a new anchor row at
+ * the new (lower) cumulative instead of writing zeros forever. Until
+ * implemented, the negative-delta event surfaces as an `error`-status
+ * agent_log so an operator can manually delete the stale anchor and
+ * let cold-start re-plant. See spec §"Operator runbook: negative-delta
+ * recovery". Tracked by Codex review fix 3.
  */
 async function getDeltaBasis(videoId, platform, weekOf) {
   const { data, error } = await supabase
@@ -152,18 +187,44 @@ async function getDeltaBasis(videoId, platform, weekOf) {
 
 /**
  * Filter scraped items to those matching `videos.post_url` in the index.
+ * Items missing a usable URL or with a non-coercible `viewCount` are
+ * dropped into `invalid` with a reason string and a sample of the bad
+ * shape — the caller logs them per profile so a scraper-contract drift
+ * (e.g. Apify ships `viewCount` as a string of garbage one day) is
+ * obvious in `agent_logs` instead of looking like a low-activity week.
  *
- * @returns {{matches: Array<{videoId,currentCumulative}>, unmatched: string[], invalid: number}}
+ * Coercion: numeric strings (e.g. Apify returning `"1234"` instead of
+ * `1234`) are accepted via `Number(rawViewCount)` after a typeof guard
+ * that rejects null/undefined/empty-string explicitly, since `Number(null)`
+ * is `0` (a valid view count we don't want to fabricate).
+ *
+ * @returns {{
+ *   matches: Array<{videoId: string, currentCumulative: number}>,
+ *   unmatched: string[],
+ *   invalid: Array<{url: string|null, viewCount: any, reason: string}>
+ * }}
  */
 function matchScrapedItems(items, videoIndex) {
   const matches = [];
   const unmatched = [];
-  let invalid = 0;
+  const invalid = [];
   for (const item of items || []) {
     const url = item && item.url;
-    const viewCount = item && item.viewCount;
-    if (!url || typeof viewCount !== 'number' || !Number.isFinite(viewCount) || viewCount < 0) {
-      invalid++;
+    const rawViewCount = item && item.viewCount;
+
+    let viewCount = NaN;
+    if (typeof rawViewCount === 'number') {
+      viewCount = rawViewCount;
+    } else if (typeof rawViewCount === 'string' && rawViewCount.trim() !== '') {
+      viewCount = Number(rawViewCount);
+    }
+
+    if (!url || typeof url !== 'string' || url.trim() === '') {
+      invalid.push({ url: typeof url === 'string' ? url : null, viewCount: rawViewCount, reason: 'missing_url' });
+      continue;
+    }
+    if (!Number.isFinite(viewCount) || viewCount < 0) {
+      invalid.push({ url, viewCount: rawViewCount, reason: 'invalid_viewCount' });
       continue;
     }
     const canon = canonicalizePostUrl(url);
@@ -230,12 +291,15 @@ async function run(campusId) {
     profilesScraped: 0,
     scrapeErrors: 0,
     scrapedVideos: 0,
+    invalidItems: 0,
     matched: 0,
     unmatched: [],
     written: 0,
     anchorsPlanted: 0,
     deltasWritten: 0,
-    negativeDeltaFloored: 0,
+    // Array of {videoId, platform, currentCumulative, sumApifyPrior} so
+    // the operator-facing log can surface samples (Codex review fix 3).
+    negativeDeltaFloored: [],
   };
 
   try {
@@ -302,9 +366,28 @@ async function run(campusId) {
 
         counters.scrapedVideos += items.length;
 
-        const { matches: m, unmatched: u } = matchScrapedItems(items, videoIndex);
+        const { matches: m, unmatched: u, invalid: inv } = matchScrapedItems(items, videoIndex);
         counters.matched += m.length;
         counters.unmatched.push(...u);
+        if (inv.length > 0) {
+          counters.invalidItems += inv.length;
+          // Per-profile log: which student × platform produced the bad
+          // items, with a small sample of the bad shape so contract drift
+          // is debuggable from agent_logs alone. Codex review fix 4.
+          await log({
+            campusId,
+            agent: AGENT_NAME,
+            action: 'profile_views_invalid_items',
+            status: 'warning',
+            payload: {
+              studentId: student.id,
+              profileUrl,
+              platform,
+              count: inv.length,
+              sample: inv.slice(0, 3),
+            },
+          });
+        }
         for (const mr of m) {
           matches.push({ videoId: mr.videoId, platform, currentCumulative: mr.currentCumulative });
         }
@@ -337,7 +420,14 @@ async function run(campusId) {
         counters.anchorsPlanted++;
       } else {
         const raw = m.currentCumulative - sumApifyPrior;
-        if (raw < 0) counters.negativeDeltaFloored++;
+        if (raw < 0) {
+          counters.negativeDeltaFloored.push({
+            videoId: m.videoId,
+            platform: m.platform,
+            currentCumulative: m.currentCumulative,
+            sumApifyPrior,
+          });
+        }
         row = {
           campus_id: campusId,
           video_id: m.videoId,
@@ -381,13 +471,24 @@ async function run(campusId) {
       });
     }
 
-    if (counters.negativeDeltaFloored > 0) {
+    if (counters.negativeDeltaFloored.length > 0) {
+      // Status `error` (not `warning`): a negative delta means the stored
+      // basis is now permanently inflated relative to reality. Every
+      // subsequent week will produce a 0 delta until the cumulative
+      // climbs back above the stale sum — which may never happen if the
+      // missing views came from a deleted post. Treat as state
+      // corruption that requires operator action. Recovery procedure:
+      // workflows/profile-views.md §"Operator runbook: negative-delta
+      // recovery". Codex review fix 3.
       await log({
         campusId,
         agent: AGENT_NAME,
         action: 'profile_views_negative_delta_floored',
-        status: 'warning',
-        payload: { count: counters.negativeDeltaFloored },
+        status: 'error',
+        payload: {
+          count: counters.negativeDeltaFloored.length,
+          samples: counters.negativeDeltaFloored.slice(0, 5),
+        },
       });
     }
 
@@ -401,12 +502,13 @@ async function run(campusId) {
         profilesScraped: counters.profilesScraped,
         scrapeErrors: counters.scrapeErrors,
         scrapedVideos: counters.scrapedVideos,
+        invalidItems: counters.invalidItems,
         matched: counters.matched,
         unmatched: counters.unmatched.length,
         written: counters.written,
         anchorsPlanted: counters.anchorsPlanted,
         deltasWritten: counters.deltasWritten,
-        negativeDeltaFloored: counters.negativeDeltaFloored,
+        negativeDeltaFloored: counters.negativeDeltaFloored.length,
       },
     });
 

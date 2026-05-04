@@ -331,7 +331,7 @@ async function test5_UnmatchedAggregation() {
   assert.strictEqual(matches[0].currentCumulative, 100, 'matched currentCumulative rounded from viewCount');
   assert.strictEqual(unmatched.length, 1, `expected 1 unmatched, got ${unmatched.length}`);
   assert.strictEqual(unmatched[0], noMatchUrl, 'unmatched URL captured verbatim');
-  assert.strictEqual(invalid, 0, `expected 0 invalid, got ${invalid}`);
+  assert.strictEqual(invalid.length, 0, `expected 0 invalid, got ${invalid.length}`);
 }
 
 async function test6_NegativeDeltaFloor() {
@@ -404,6 +404,126 @@ async function test7_CronRegistration() {
   assert(!pv2, 'profile-views-agent should NOT register when APIFY_API_TOKEN is unset');
 }
 
+async function test8_SyncPreflightRefusesOnApifyLineage() {
+  // Codex review fix 1: scripts/sync-performance-tracker.assertNoApifyLineage
+  // must throw when the Profile Views Agent has already written even one
+  // (apify | apify_anchor) row for the campus, so a sheet upsert can't
+  // clobber the agent's lineage.
+  const { assertNoApifyLineage } = require('../scripts/sync-performance-tracker');
+
+  // Seed an apify_anchor row tied to a synthetic test video so teardown
+  // can clean up.
+  const seedTime = Date.now();
+  const vidId = await seedTestVideo({
+    postUrl: `https://test.example/sync-preflight/${seedTime}`,
+    titleSuffix: 'sync_preflight',
+  });
+  await seedPerformance({
+    videoId: vidId,
+    platform: 'tiktok',
+    viewCount: 999,
+    weekOf: '2026-04-24',
+    source: 'apify_anchor',
+  });
+
+  let threw = false;
+  let message = '';
+  try {
+    await assertNoApifyLineage(AUSTIN_CAMPUS_ID);
+  } catch (err) {
+    threw = true;
+    message = err.message;
+  }
+  assert(threw, 'assertNoApifyLineage must throw when apify-lineage rows exist');
+  assert(/decommissioned/i.test(message), `error message must mention decommission: "${message}"`);
+  assert(/Apify-lineage rows detected/.test(message), `error message must lead with "Apify-lineage rows detected": "${message}"`);
+}
+
+async function test9_DuplicatePostUrlDetection() {
+  // Codex review fix 2: loadVideoUrlIndex must surface a warning log when
+  // two videos canonicalize to the same post_url. First-loaded wins; the
+  // dropped row's id must appear in the warning sample.
+  const seedTime = Date.now();
+  const sharedUrl = `https://test.example/dup-${seedTime}/`;
+
+  const vid1 = await seedTestVideo({ postUrl: sharedUrl, titleSuffix: 'dup_first' });
+  // Same canonical URL (trailing slash collapses identically) on a
+  // second video to force the collision.
+  const vid2 = await seedTestVideo({ postUrl: sharedUrl, titleSuffix: 'dup_second' });
+
+  // Snapshot the agent_logs before, then call loadVideoUrlIndex, then
+  // assert one new `duplicate_post_urls_detected` row landed referencing
+  // both ids.
+  const startedAt = new Date().toISOString();
+  const index = await profileViews.loadVideoUrlIndex(AUSTIN_CAMPUS_ID);
+
+  // The map keeps exactly one of the two videos for the shared URL.
+  const canon = canonicalizePostUrl(sharedUrl);
+  const kept = index.get(canon);
+  assert(kept, 'one of the duplicate videos must be in the index');
+  assert([vid1, vid2].includes(kept.id), `kept id must be one of the seeded duplicates, got ${kept.id}`);
+
+  // Look for the warning log entry.
+  const { data: logs, error: lErr } = await supabase
+    .from('agent_logs')
+    .select('action, status, payload, created_at')
+    .eq('agent_name', 'profile-views')
+    .eq('action', 'duplicate_post_urls_detected')
+    .gte('created_at', startedAt)
+    .order('created_at', { ascending: false })
+    .limit(5);
+  assert(!lErr, `agent_logs query failed: ${lErr && lErr.message}`);
+  assert(logs && logs.length >= 1, `expected ≥1 duplicate_post_urls_detected log row, got ${logs ? logs.length : 0}`);
+
+  const found = logs.find((l) => {
+    const sample = (l.payload && l.payload.sample) || [];
+    return sample.some((s) => s && s.url === canon);
+  });
+  assert(found, 'no log entry referenced the seeded duplicate URL');
+  assert.strictEqual(found.status, 'warning', `expected status='warning', got '${found.status}'`);
+  const samples = found.payload.sample;
+  const referencesBoth = samples.some(
+    (s) => (s.kept_id === vid1 && s.dropped_id === vid2) || (s.kept_id === vid2 && s.dropped_id === vid1)
+  );
+  assert(referencesBoth, `sample must reference both seeded ids; got ${JSON.stringify(samples)}`);
+}
+
+async function test10_NumericStringViewCountAndInvalidShapes() {
+  // Codex review fix 4: matchScrapedItems coerces numeric-string viewCount
+  // into a number, but rejects null/undefined/non-numeric strings/missing
+  // urls — each rejected item lands in `invalid` with a reason.
+  const baseUrl = `https://test.example/coerce-${Date.now()}`;
+  const videoIndex = new Map();
+  videoIndex.set(canonicalizePostUrl(`${baseUrl}/a`), { id: 'fake-a', post_url: `${baseUrl}/a` });
+
+  const items = [
+    { url: `${baseUrl}/a`, viewCount: '1234' }, // numeric string → match
+    { url: `${baseUrl}/b`, viewCount: null }, // invalid: null
+    { url: `${baseUrl}/c`, viewCount: undefined }, // invalid: undefined
+    { url: `${baseUrl}/d`, viewCount: 'not a number' }, // invalid: non-numeric string
+    { url: `${baseUrl}/e`, viewCount: -5 }, // invalid: negative
+    { viewCount: 100 }, // invalid: missing url
+    { url: '', viewCount: 100 }, // invalid: empty-string url
+  ];
+
+  const { matches, unmatched, invalid } = matchScrapedItems(items, videoIndex);
+
+  // Numeric-string accepted and routed through canonical match.
+  assert.strictEqual(matches.length, 1, `expected 1 match, got ${matches.length}`);
+  assert.strictEqual(matches[0].videoId, 'fake-a', 'numeric-string item matched');
+  assert.strictEqual(matches[0].currentCumulative, 1234, 'numeric-string coerced and rounded');
+
+  // Six invalid items: null, undefined, non-numeric, negative, missing url, empty url.
+  assert.strictEqual(invalid.length, 6, `expected 6 invalid, got ${invalid.length}`);
+
+  const reasons = invalid.map((i) => i.reason);
+  assert.strictEqual(reasons.filter((r) => r === 'missing_url').length, 2, 'missing_url + empty url both → missing_url');
+  assert.strictEqual(reasons.filter((r) => r === 'invalid_viewCount').length, 4, 'four invalid_viewCount rows');
+
+  // Unmatched stays empty — no item passed validation but failed lookup.
+  assert.strictEqual(unmatched.length, 0, `expected 0 unmatched, got ${unmatched.length}`);
+}
+
 // ── Driver ─────────────────────────────────────────────────────────────────
 
 async function main() {
@@ -416,6 +536,9 @@ async function main() {
   await runTest('5. matchScrapedItems unmatched aggregation', test5_UnmatchedAggregation);
   await runTest('6. Negative delta floors at 0', test6_NegativeDeltaFloor);
   await runTest('7. Cron registration smoke test', test7_CronRegistration);
+  await runTest('8. Sync preflight refuses on apify-lineage', test8_SyncPreflightRefusesOnApifyLineage);
+  await runTest('9. Duplicate post_url detection logs warning', test9_DuplicatePostUrlDetection);
+  await runTest('10. Numeric-string viewCount + invalid shapes', test10_NumericStringViewCountAndInvalidShapes);
 
   console.log(`\n${pass}/${pass + fail + skipped} ran  (passed=${pass}, failed=${fail}, skipped=${skipped})`);
   return fail === 0;

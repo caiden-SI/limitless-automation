@@ -167,6 +167,43 @@ Per CLAUDE.md rule 1: log full error to `agent_logs` with status `"error"` BEFOR
 
 Sub-failures (one student's TikTok scrape fails) do not bubble — they are logged at `warning` and the loop continues. The outer try/catch only catches infrastructure failures (`videos` index load, the supabase client itself).
 
+## Operator runbook: negative-delta recovery
+
+When the scrape's current cumulative drops below `sumApifyPrior` (the running sum of all prior Apify-lineage rows for `(video, platform)`), the agent floors the new delta at 0 and emits an `error`-status log `profile_views_negative_delta_floored`. Payload includes `count` plus up to 5 sample rows with `videoId, platform, currentCumulative, sumApifyPrior`.
+
+Common causes: the creator deleted a high-view post; the platform reset its public counter; or the post was unpublished and re-published with a fresh count. The 0-floor is correct for that one week — but every subsequent week will also produce a 0 delta until the new cumulative climbs back above the stale sum, which may never happen if the deleted post was the bulk of the views. Treat the log as state corruption that requires action.
+
+### Manual recovery (until anchor-reset is implemented)
+
+For each affected `(video_id, platform)` from the log payload:
+
+1. Verify the platform-side state — confirm whether a major post was deleted, the cumulative reset, or some other event explains the drop.
+2. Delete the stale Apify-lineage rows for that pair:
+
+   ```sql
+   DELETE FROM performance
+    WHERE video_id = $1
+      AND platform = $2
+      AND source IN ('apify','apify_anchor');
+   ```
+
+   Sheet rows (`source='sheet'`) stay — they remain valid pre-Apify history and continue to feed the Performance Agent's last-4-weeks window.
+3. The next Thursday cron re-anchors at the current cumulative. The cold-start path writes a fresh `apify_anchor` and steady-state resumes from there. Until then, the dropped Apify-lineage history is rebuildable from future scrapes; this manual reset just unblocks delta math going forward.
+
+The longer-term fix is anchor-reset-on-sustained-negative — when the condition persists for ≥2 weeks, the agent should auto-plant a new anchor at the new cumulative. Tracked as a TODO in `agents/profile-views.js` near `getDeltaBasis`. Until then, this manual procedure is the documented path.
+
+## Sheet sync decommission gate
+
+Once the Profile Views Agent has written even one `(apify | apify_anchor)` row for a campus, `scripts/sync-performance-tracker.js` is decommissioned for that campus. The two writers share the unique key `(video_id, platform, week_of)`, so a sheet upsert at the same week would clobber an Apify anchor or delta and silently break every subsequent week's delta math. The sync script enforces this with a preflight query (`assertNoApifyLineage`) that throws before any tab is read:
+
+```
+Apify-lineage rows detected — sheet sync is decommissioned. Remove the
+cron and delete this script's invocation, or contact the Profile Views
+Agent owner before re-running.
+```
+
+The cleaner architectural fix — including `source` in the conflict key, or partitioning sheet vs Apify into separate tables — is on the carry list. Until then, the gate is the only thing keeping the lineage clean.
+
 ## Test requirements
 
 New file `scripts/test-profile-views-agent.js`. Must:

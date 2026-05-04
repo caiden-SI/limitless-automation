@@ -2162,6 +2162,74 @@ No additional migrations beyond the three already applied (`2026-05-04-videos-po
 5. **Confirm `austinway_` Instagram handle** out-of-band (Session 24 carry — apply correction if wrong).
 6. **First production Thursday cron run** — once `APIFY_API_TOKEN` is in `.env` on the Mac Mini and the server reboots, the next Thursday at 9 AM the agent fires for real. Watch `agent_logs` for `profile_views_run_complete` and the `anchorsPlanted` / `deltasWritten` split.
 
+### Adversarial review fixes
+
+Codex review on the branch returned 1 critical + 2 high + 1 medium. All four applied in-session before merge.
+
+1. **CRITICAL — sheet upserts could overwrite Apify lineage** (`scripts/sync-performance-tracker.js`).
+
+   The unique key `(video_id, platform, week_of)` is shared by both writers. If the sheet sync ran after Profile Views in the same week, a `'sheet'` upsert would clobber an `apify_anchor` or `apify` row at that key; the next Thursday's `getDeltaBasis` would ignore the new `'sheet'` row and either re-cold-start or undercount the basis — silent corruption that lasts at least one Performance Agent analysis window.
+
+   Fix: a hard-fail preflight `assertNoApifyLineage(campusId)` runs before any tab is read. It queries `performance` for `source IN ('apify','apify_anchor')` scoped to the campus and throws with the exact spec'd message ("Apify-lineage rows detected — sheet sync is decommissioned. ...") if any row is found. Test 8 seeds one `apify_anchor` row and asserts the function refuses. The cleaner architectural fix (include `source` in the conflict key, or partition into separate tables) is on the carry list; until then, this gate is the only thing keeping lineage clean.
+
+2. **HIGH — duplicate `post_url` rows silently collapsed** (`agents/profile-views.js loadVideoUrlIndex`).
+
+   `Map.set` overwrites on duplicate keys. With the unique partial index on `(campus_id, post_url)` still a Session 22 carry, two videos sharing a canonical URL would silently misattribute scraped views to whichever row supabase returned last — invisible to the operator.
+
+   Fix: first-loaded wins, collisions captured into `[{url, kept_id, dropped_id}]` and emitted as a `warning`-status `duplicate_post_urls_detected` log with up to 5 samples after the load completes. Test 9 seeds two videos with the same `post_url`, calls `loadVideoUrlIndex`, asserts the index keeps exactly one of them, and asserts the warning log row's payload references both ids.
+
+3. **HIGH — negative-delta flooring permanently zeroed videos after platform reset** (`agents/profile-views.js` run loop).
+
+   The 0-floor was correct for the bad week but left `sumApifyPrior` permanently inflated. Every subsequent week subtracted against the stale sum, producing 0 deltas indefinitely if the missing views never returned. The single-`warning` log hid state corruption.
+
+   Fix:
+   - Status upgraded `warning` → `error`. The Performance Agent's Monday analysis runs against `agent_logs` enough that an `error` here surfaces faster than a `warning` lost in the noise.
+   - Counter changed from `int++` to `array.push({videoId, platform, currentCumulative, sumApifyPrior})`; the log payload now carries `count` plus `samples: [...]` (first 5).
+   - New `## Operator runbook: negative-delta recovery` section in `workflows/profile-views.md` with the manual recovery SQL (`DELETE FROM performance WHERE video_id = $1 AND platform = $2 AND source IN ('apify','apify_anchor')`) and the rationale for why sheet rows stay.
+   - `TODO (anchor-reset)` filed in a doc-block comment at `getDeltaBasis` describing the longer-term fix — auto-plant a fresh anchor when the negative-delta condition persists for ≥2 consecutive weeks.
+
+4. **MEDIUM — bad Apify item shapes dropped silently** (`agents/profile-views.js matchScrapedItems`).
+
+   The function tracked an `invalid` count internally but `run()` threw it away. A scraper-contract drift (Apify shipping `viewCount` as `null`, an empty string, or a numeric string) looked identical to a low-activity week.
+
+   Fix:
+   - `matchScrapedItems` return shape changed from `invalid: number` to `invalid: Array<{url, viewCount, reason}>` where `reason ∈ {'missing_url', 'invalid_viewCount'}`.
+   - Numeric-string `viewCount` is now coerced via `Number(rawViewCount)` after a typeof guard that explicitly rejects `null` / `undefined` / empty string (since `Number(null)` is `0` — a valid view count we don't want to fabricate).
+   - `run()` propagates `invalid.length` into a new `counters.invalidItems` summary field, and emits a per-profile `profile_views_invalid_items` warning with `studentId, profileUrl, platform, count, sample` (first 3 bad shapes) so contract drift is debuggable from `agent_logs` alone.
+   - Test 10 seeds 7 items covering the legit numeric-string case, all four invalid reasons (null, undefined, non-numeric string, negative), and two missing-url variants (key absent, empty string), asserts 1 match, 0 unmatched, 6 invalid with reasons split 2 missing_url + 4 invalid_viewCount.
+
+### Test status after fixes
+
+`scripts/test-profile-views-agent.js`: 10/10 pass.
+
+```
+PASS  1. Friday alignment unit cases
+PASS  2. Real Apify scrape against Alpha High TikTok
+PASS  3. Cold-start / sheet boundary / steady-state paths
+PASS  4. scrapeProfileVideos returns viewCount (source check)
+PASS  5. matchScrapedItems unmatched aggregation
+PASS  6. Negative delta floors at 0
+PASS  7. Cron registration smoke test
+PASS  8. Sync preflight refuses on apify-lineage
+PASS  9. Duplicate post_url detection logs warning
+PASS  10. Numeric-string viewCount + invalid shapes
+```
+
+### Deliberately deferred
+
+Two items from the review are NOT in this commit; they are proper follow-ups, not in-scope hot fixes:
+
+- **Unique partial index on `(campus_id, post_url) WHERE post_url IS NOT NULL`** — the structural fix for the Fix 2 class. Carry list since Session 22; the warning surface is sufficient until then.
+- **Anchor-reset-on-sustained-negative** — the structural fix for Fix 3's longer-term shape. TODO filed in code; manual runbook covers the gap.
+
+### Files changed (Adversarial review fixes)
+
+- `agents/profile-views.js` — collision detection in `loadVideoUrlIndex`, `negativeDeltaFloored` array + error log, `matchScrapedItems` invalid-shape reporting + numeric-string coercion, per-profile `profile_views_invalid_items` log, `invalidItems` counter, TODO comment at `getDeltaBasis`.
+- `scripts/sync-performance-tracker.js` — `assertNoApifyLineage(campusId)` preflight, called once before the tab loop; exported.
+- `scripts/test-profile-views-agent.js` — 3 new tests (sync preflight refusal, duplicate URL detection, numeric-string + invalid shapes); test 5 updated for the new `invalid` array shape.
+- `workflows/profile-views.md` — new `## Operator runbook: negative-delta recovery` and `## Sheet sync decommission gate` sections.
+- `docs/progress-log.md` — this subsection.
+
 
 
 
