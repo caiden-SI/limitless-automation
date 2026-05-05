@@ -30,6 +30,8 @@ function startOfTodayLocal(now = Date.now()) {
   return d.getTime();
 }
 
+const DAY_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
 // Lightweight relative-time formatter, duplicated from health.js to
 // avoid a circular import (health.js imports prevCronFire from here).
 function relTimeAgo(iso, now = Date.now()) {
@@ -476,14 +478,33 @@ export const AGENT_REGISTRY = {
     description:
       'Weekly Apify scrape of student + brand profiles. Writes anchor or delta rows to performance per (video, platform, week).',
     headlineMetric: (rows) => {
-      const recent = rows.find(
+      if (rows.length === 0) return 'awaiting first run';
+
+      const completeRow = rows.find(
         (r) => r.action === 'profile_views_run_complete',
       );
-      if (!recent) return 'awaiting first run';
-      const anchors = recent.payload?.anchorsPlanted ?? 0;
-      const deltas = recent.payload?.deltasWritten ?? 0;
-      const total = anchors + deltas;
-      return `${total} rows written · last Thu`;
+
+      if (completeRow) {
+        const day = DAY_SHORT[new Date(completeRow.created_at).getDay()];
+        const p = completeRow.payload || {};
+        const hasFields =
+          typeof p.anchorsPlanted === 'number' ||
+          typeof p.deltasWritten === 'number' ||
+          typeof p.matched === 'number';
+        if (hasFields) {
+          const total = (p.anchorsPlanted || 0) + (p.deltasWritten || 0);
+          return `${total} rows written · last ${day}`;
+        }
+        // run_complete row exists but the payload is missing the
+        // expected counters (older row format, or run completed
+        // without writing any rows).
+        return `profile-views run complete · last ${day}`;
+      }
+
+      // Rows exist but none of them are run_complete — typically
+      // run_started, scrape errors, or duplicate-detection events.
+      const word = rows.length === 1 ? 'event' : 'events';
+      return `${rows.length} ${word} logged · awaiting first complete run`;
     },
     actionProse: {
       profile_views_run_started: 'profile-views run started',
