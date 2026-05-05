@@ -148,6 +148,48 @@
   .lim-bottom-cols { grid-template-columns: 1fr 1fr; }
 }
 
+/* Laptop pulse row — INTEGRATIONS + ACTIVITY stacked on the left,
+ * SYSTEM PULSE full-height on the right. Both columns end at the
+ * same vertical position: SYSTEM PULSE defines the row height,
+ * the left stack flexes ACTIVITY to fill (SYSTEM PULSE − INTEGRATIONS)
+ * so there's no void below INTEGRATIONS or unused space below the
+ * activity feed. Collapses to a single column at ≤900px. */
+.lim-pulse-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  align-items: stretch;
+}
+.lim-pulse-left-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-height: 0;
+}
+.lim-pulse-left-stack > section:first-child {
+  flex: 0 0 auto;       /* INTEGRATIONS — content-sized ~60px */
+}
+.lim-pulse-left-stack > section:last-child {
+  flex: 1 1 0;          /* ACTIVITY — fills remaining height */
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.lim-pulse-left-stack > section:last-child .lim-cpv-activity {
+  flex: 1 1 0;
+  max-height: none;     /* override the 280px cap so the feed
+                         * fills the column at wide widths */
+  min-height: 0;
+}
+@media (max-width: 900px) {
+  .lim-pulse-row { grid-template-columns: 1fr; }
+  /* In single-column mode, restore the activity feed's natural
+   * 280px cap so it doesn't dominate narrow viewports. */
+  .lim-pulse-left-stack > section:last-child .lim-cpv-activity {
+    max-height: 280px;
+  }
+}
+
 /* ── HERO HEALTH BAR (PortraitHero — .lim-cpv-hero) ─────────────────────── */
 .lim-cpv-hero {
   background: var(--bg-2);
