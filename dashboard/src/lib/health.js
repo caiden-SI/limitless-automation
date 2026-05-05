@@ -1,6 +1,6 @@
 // Pure helpers for derived dashboard state. No React, no Supabase here.
 
-import { prevCronFire } from './agents';
+import { AGENT_REGISTRY, nextCronFire, prevCronFire } from './agents';
 
 export const STATUS_ORDER = [
   'IDEA',
@@ -166,49 +166,83 @@ export function summarizeAgent(name, logs, now = Date.now()) {
 const truncate = (s, max = 140) =>
   !s ? s : (s.length > max ? `${s.slice(0, max - 1)}…` : s);
 
-// Cron schedule list — same set the system_health RPC populates and the
-// AGENTS metadata describes. Kept in sync manually; if a new cron is
-// registered server-side, add it here.
+// Cron-cell roster: which crons feed the System Pulse "Cron schedule"
+// cell. Cron expressions and per-agent grace thresholds (greenWithinMs /
+// redAfterMs) are pulled from AGENT_REGISTRY at evaluation time so this
+// list stays minimal — only the summaryKey (the system_health_summary
+// RPC column for that agent's last run) needs to be tracked here.
+//
+// footage-scan and profile-views are intentionally absent: the RPC
+// doesn't expose last_footage_scan_run / last_profile_views_run yet.
+// Adding them is a schema change (DROP+CREATE FUNCTION); out of scope
+// for this fix.
 const CRON_AGENTS = [
-  { name: 'research',    cron: '0 6 * * *',   summaryKey: 'last_research_run' },
-  { name: 'performance', cron: '0 7 * * 1',   summaryKey: 'last_performance_run' },
-  { name: 'scripting',   cron: '*/15 * * * *', summaryKey: 'last_scripting_run' },
-  { name: 'fireflies',   cron: '0 21 * * *',  summaryKey: 'last_fireflies_run' },
+  { name: 'research',    summaryKey: 'last_research_run' },
+  { name: 'performance', summaryKey: 'last_performance_run' },
+  { name: 'scripting',   summaryKey: 'last_scripting_run' },
+  { name: 'fireflies',   summaryKey: 'last_fireflies_run' },
 ];
 
 // Per-cron evaluation. Returns { agent, state, prev, last, detail }.
-// Decision table comes verbatim from the spec.
+//
+// Overdue rule: a cron is overdue only when nextCronFire(cron, lastFire)
+// is in the past. Replaces the previous "lastMs >= prevMs" check, which
+// mis-flagged nightly / weekly crons as overdue any time we polled
+// between scheduled fires (e.g. fireflies 9 PM nightly, polled at noon —
+// lastFire 9 PM yesterday, prev = 9 PM yesterday too, edge cases on
+// timestamp precision dropped through to the "2h grace / 24h amber"
+// fallback and lit the cell amber 13–15h after the previous run).
+//
+// When the cron HAS missed its expected next fire, graduate by the
+// per-agent grace window from AGENT_REGISTRY. Closes the
+// iteration-3 follow-up about CRON_AGENTS being a manual sync target.
 function evaluateCron(agent, summary, now) {
-  const prev = prevCronFire(agent.cron, new Date(now));
+  const registryEntry = AGENT_REGISTRY[agent.name];
+  if (!registryEntry || !registryEntry.cronExpression) {
+    return { agent: agent.name, state: 'green', prev: null, last: null, detail: `${agent.name} cron expression not in registry` };
+  }
+  const cron = registryEntry.cronExpression;
+  const prev = prevCronFire(cron, new Date(now));
   if (!prev) {
     return { agent: agent.name, state: 'green', prev: null, last: null, detail: 'cron expression not recognized' };
   }
-  const prevMs   = prev.getTime();
-  const uptime   = summary?.system_uptime ? new Date(summary.system_uptime).getTime() : null;
-  const lastRaw  = summary?.[agent.summaryKey];
-  const lastMs   = lastRaw ? new Date(lastRaw).getTime() : null;
 
-  // Cron has never been due during this system's lifetime.
-  if (uptime != null && prevMs < uptime) {
+  const uptime  = summary?.system_uptime ? new Date(summary.system_uptime).getTime() : null;
+  const lastRaw = summary?.[agent.summaryKey];
+  const lastMs  = lastRaw ? new Date(lastRaw).getTime() : null;
+
+  // Cron has never been due during this system's lifetime — the most
+  // recent expected fire boundary was before boot, so the agent hasn't
+  // had a chance to fire yet on this uptime. Green by definition.
+  if (uptime != null && prev.getTime() < uptime) {
     return { agent: agent.name, state: 'green', prev, last: lastRaw, detail: `${agent.name} not yet due since boot` };
   }
-  // No prior log — can't conclude "broken" without a baseline.
+  // No prior log — can't conclude broken without a baseline.
   if (lastMs == null) {
     return { agent: agent.name, state: 'green', prev, last: null, detail: `${agent.name} hasn't logged any activity yet` };
   }
-  // Ran on or after the most recent expected fire.
-  if (lastMs >= prevMs) {
+
+  // Cron is on schedule when the next expected fire AFTER lastFire is
+  // still in the future. Fireflies fired 9 PM yesterday, polled at
+  // noon: nextCronFire = 9 PM today > now → green, no false overdue.
+  const nextExpected = nextCronFire(cron, new Date(lastMs));
+  if (!nextExpected || nextExpected.getTime() > now) {
     return { agent: agent.name, state: 'green', prev, last: lastRaw, detail: `${agent.name} on schedule` };
   }
-  // Last fire was before prev; how late are we?
-  const lateMs = now - prevMs;
-  if (lateMs <= 2 * HOUR) {
-    return { agent: agent.name, state: 'green', prev, last: lastRaw, detail: `${agent.name} within 2h grace` };
+
+  // Past the expected next fire. Graduate by per-agent grace window.
+  // Footage-scan / scripting carry a generous grace because their crons
+  // fire every 15 min but only log when they have work — a 60-min
+  // overdue criterion would flame them red on every quiet stretch.
+  const ageMs = now - lastMs;
+  const { greenWithinMs, redAfterMs } = registryEntry;
+  if (greenWithinMs != null && ageMs <= greenWithinMs) {
+    return { agent: agent.name, state: 'green', prev, last: lastRaw, detail: `${agent.name} within grace window` };
   }
-  if (lateMs <= 24 * HOUR) {
-    return { agent: agent.name, state: 'amber', prev, last: lastRaw, detail: `${agent.name} ${timeAgo(prev, now)} overdue` };
+  if (redAfterMs != null && ageMs <= redAfterMs) {
+    return { agent: agent.name, state: 'amber', prev, last: lastRaw, detail: `${agent.name} ${timeAgo(lastRaw, now)} overdue` };
   }
-  return { agent: agent.name, state: 'red', prev, last: lastRaw, detail: `${agent.name} not fired in ${timeAgo(prev, now)}` };
+  return { agent: agent.name, state: 'red', prev, last: lastRaw, detail: `${agent.name} not fired in ${timeAgo(lastRaw, now)}` };
 }
 
 function worstState(states) {
