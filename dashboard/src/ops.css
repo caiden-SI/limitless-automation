@@ -539,6 +539,17 @@
 .lim-c-log-agent--error   { color: var(--red); }
 .lim-c-log-agent--warning { color: var(--amber); }
 .lim-c-log-msg { font-size: 12px; flex: 1; line-height: 1.4; }
+/* Status pip — leading indicator on every row so success/warning/error
+ * is visible at a glance without comparing against row backgrounds.
+ * Centered vertically so multi-line rows (those with error_message)
+ * keep the pip aligned to the row rather than the first line. */
+.lim-c-log-pip {
+  width: 6px; height: 6px; border-radius: 50%;
+  flex-shrink: 0; align-self: center;
+}
+.lim-c-log-pip--success { background: var(--green); }
+.lim-c-log-pip--warning { background: var(--amber); }
+.lim-c-log-pip--error   { background: var(--red); }
 /* Health rows tint the message text by status — every other agent's
  * "success" is implicit so tinting them adds noise without information.
  * The detail span (.lim-c-log-err) defaults to red, which is wrong for
