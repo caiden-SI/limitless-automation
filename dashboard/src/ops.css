@@ -272,12 +272,12 @@
 }
 @keyframes lim-cpv-agent-pulse-soft {
   0%   { opacity: 0;    }
-  12%  { opacity: 0.12; }
+  12%  { opacity: 0.20; }
   100% { opacity: 0;    }
 }
 @keyframes lim-cpv-agent-pulse-sharp {
   0%   { opacity: 0;    }
-  10%  { opacity: 0.25; }
+  10%  { opacity: 0.40; }
   100% { opacity: 0;    }
 }
 @media (prefers-reduced-motion: reduce) {
