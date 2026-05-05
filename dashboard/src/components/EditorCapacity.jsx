@@ -13,7 +13,7 @@ export default function EditorCapacity({ campusId }) {
 
   const counts = {};
   for (const t of tasks || []) {
-    if (t.assignee_id && t.status === 'IN EDITING') {
+    if (t.assignee_id && (t.status === 'READY FOR EDITING' || t.status === 'IN EDITING')) {
       counts[t.assignee_id] = (counts[t.assignee_id] || 0) + 1;
     }
   }

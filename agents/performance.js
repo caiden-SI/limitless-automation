@@ -125,6 +125,8 @@ async function run(campusId) {
     // 6. Build prompt and call Claude
     const prompt = buildAnalysisPrompt(perfData, topContext, bottomContext, benchmarks || [], sorted.length);
     const analysis = await askJson({
+      callerAgent: 'performance',
+      campusId,
       system: ANALYSIS_SYSTEM,
       prompt,
       maxTokens: 2048,

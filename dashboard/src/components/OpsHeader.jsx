@@ -1,6 +1,4 @@
-// Header chrome for Ops + Pipeline routes.
-//   - Counts row stays (active/stuck/failed); alarm semantics live in
-//     Action Items, so the count numbers stay default-ink.
+// Header chrome for Ops route.
 //   - Pip strip consumes pulse.cells using each cell's `pipLabel` field
 //     (so Webhook ingestion + Webhook tunnel render distinct labels
 //     instead of both abbreviating to "WEBH").
@@ -15,12 +13,9 @@ const STALE_AFTER_MS = 60_000;
 
 export default function OpsHeader({
   campusId, campuses, onCampus, campusLoading,
-  totals, pulseCells, lastFetchedAt,
+  pulseCells, lastFetchedAt,
 }) {
   const { dow, time, tzAbbrev } = useLiveClock();
-  const stuck = totals?.stuck ?? 0;
-  const failed = totals?.failed ?? 0;
-  const active = totals?.active ?? 0;
 
   // Tick every second so the "updated Xs ago" line stays accurate.
   // Local state only; nothing above this consumes the tick, so a re-render
@@ -72,11 +67,6 @@ export default function OpsHeader({
           <span className="lim-header2__poll-fresh">
             · {updatedPrefix} {updatedLabel}
           </span>
-        </div>
-        <div className="lim-header2__counts">
-          <strong>{active}</strong> ACTIVE ·{' '}
-          <strong>{stuck}</strong> STUCK ·{' '}
-          <strong>{failed}</strong> QA
         </div>
         {pulseCells && pulseCells.length > 0 && (
           <div className="lim-header2__pips">
