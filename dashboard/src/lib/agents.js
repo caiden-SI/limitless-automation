@@ -139,8 +139,12 @@ export const AGENT_REGISTRY = {
     cronExpression: '*/15 * * * *',
     sparklineWindowMs: 24 * HOUR,
     sparklineBars: 48,
-    greenWithinMs: 30 * MINUTE,
-    redAfterMs: 60 * MINUTE,
+    // Cron fires every 15 min, but the agent only writes a log row
+    // when it has actual work (scan_complete, footage_detected, etc.) —
+    // ~5 rows/day per the May 4 census. Thresholds reflect observed
+    // logging cadence, not cron rhythm.
+    greenWithinMs: 12 * HOUR,
+    redAfterMs: 24 * HOUR,
     description:
       'Checks Dropbox every 15 min for new raw footage; advances videos when folders appear, with a 1-hour propagation delay.',
     headlineMetric: (rows, now = Date.now()) => {
@@ -307,8 +311,11 @@ export const AGENT_REGISTRY = {
     cronExpression: '*/15 * * * *',
     sparklineWindowMs: 24 * HOUR,
     sparklineBars: 48,
-    greenWithinMs: 30 * MINUTE,
-    redAfterMs: 60 * MINUTE,
+    // Cron fires every 15 min, but the agent skips fast on the
+    // no-event path — only ~7 rows/day per the May 4 census.
+    // Thresholds reflect observed logging cadence, not cron rhythm.
+    greenWithinMs: 1 * HOUR,
+    redAfterMs: 6 * HOUR,
     description:
       'Watches Google Calendar every 15 min and stages 3 concept scripts when a filming event is upcoming. Brand-voice validation gates each concept before ClickUp.',
     headlineMetric: (rows, now = Date.now()) => {
