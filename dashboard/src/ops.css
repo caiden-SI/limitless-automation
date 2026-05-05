@@ -148,6 +148,48 @@
   .lim-bottom-cols { grid-template-columns: 1fr 1fr; }
 }
 
+/* Laptop pulse row — INTEGRATIONS + ACTIVITY stacked on the left,
+ * SYSTEM PULSE full-height on the right. Both columns end at the
+ * same vertical position: SYSTEM PULSE defines the row height,
+ * the left stack flexes ACTIVITY to fill (SYSTEM PULSE − INTEGRATIONS)
+ * so there's no void below INTEGRATIONS or unused space below the
+ * activity feed. Collapses to a single column at ≤900px. */
+.lim-pulse-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  align-items: stretch;
+}
+.lim-pulse-left-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-height: 0;
+}
+.lim-pulse-left-stack > section:first-child {
+  flex: 0 0 auto;       /* INTEGRATIONS — content-sized ~60px */
+}
+.lim-pulse-left-stack > section:last-child {
+  flex: 1 1 0;          /* ACTIVITY — fills remaining height */
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.lim-pulse-left-stack > section:last-child .lim-cpv-activity {
+  flex: 1 1 0;
+  max-height: none;     /* override the 280px cap so the feed
+                         * fills the column at wide widths */
+  min-height: 0;
+}
+@media (max-width: 900px) {
+  .lim-pulse-row { grid-template-columns: 1fr; }
+  /* In single-column mode, restore the activity feed's natural
+   * 280px cap so it doesn't dominate narrow viewports. */
+  .lim-pulse-left-stack > section:last-child .lim-cpv-activity {
+    max-height: 280px;
+  }
+}
+
 /* ── HERO HEALTH BAR (PortraitHero — .lim-cpv-hero) ─────────────────────── */
 .lim-cpv-hero {
   background: var(--bg-2);
@@ -213,42 +255,214 @@
   .lim-section-title__right { font-size: 10px; letter-spacing: 0.12em; }
 }
 
-/* ── AGENTS GRID (.lim-cpv-agents / .lim-cpv-agent) ─────────────────────── */
-.lim-cpv-agents { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; }
-.lim-cpv-agents > .lim-cpv-agent:nth-child(7) { grid-column: span 2; }
+/* ── AGENTS panel — 3×3 card grid ───────────────────────────────────────── */
+/* Default 3-column for portrait Studio Display + most desktop sizes.
+ * Collapses to 2-column at ≤900px and 1-column at ≤600px to match
+ * existing dashboard breakpoints.                                          */
+.lim-cpv-agents {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+}
 .lim-cpv-agent {
-  background: var(--bg-2); border: none;
-  padding: 10px 12px;
-  display: flex; flex-direction: column; gap: 6px;
-  cursor: pointer; text-align: left;
-  font-family: inherit; color: var(--ink);
+  background: var(--bg-2);
+  border: none;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  cursor: pointer;
+  text-align: left;
+  font-family: inherit;
+  color: var(--ink);
   transition: background 0.15s;
-  min-height: 110px;
+  min-height: 168px;
+  position: relative;
+  /* isolate creates a stacking context so the pulse overlay
+   * (::after, z-index 0) sits between the card's bg + spine and
+   * the children (z-index 1) rather than on top of everything.   */
+  isolation: isolate;
+  overflow: hidden;
 }
 .lim-cpv-agent:hover { background: var(--bg-3); }
-.lim-cpv-agent--red   { box-shadow: inset 3px 0 0 var(--red);   background: color-mix(in oklab, var(--red) 8%, var(--bg-2)); }
-.lim-cpv-agent--amber { box-shadow: inset 3px 0 0 var(--amber); }
+.lim-cpv-agent > * { position: relative; z-index: 1; }
+
+/* Pulse overlay — full-cell wash that fades in/out when a new
+ * agent_logs row matching this card arrives. Pseudo-element so the
+ * card's spine box-shadow stays visible (the wash tints over it,
+ * which is the intended "whole-cell pulse" feel).                  */
+.lim-cpv-agent::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background: var(--pulse-color, transparent);
+  opacity: 0;
+}
+.lim-cpv-agent.is-pulsing-success::after {
+  --pulse-color: var(--green);
+  animation: lim-cpv-agent-pulse-soft 4000ms ease-out;
+}
+.lim-cpv-agent.is-pulsing-warning::after {
+  --pulse-color: var(--amber);
+  animation: lim-cpv-agent-pulse-soft 4000ms ease-out;
+}
+.lim-cpv-agent.is-pulsing-error::after {
+  --pulse-color: var(--red);
+  animation: lim-cpv-agent-pulse-sharp 3000ms ease-out;
+}
+/* Held-peak shape: fast fade-in to peak, hold across the middle,
+ * slow fade-out. Gives the operator time to look up, register
+ * which card pulsed, and read the headline metric before the
+ * wash drops. Content sits on z-index 1 above the ::after wash,
+ * so text/sparkline stay legible at the held peak.                */
+@keyframes lim-cpv-agent-pulse-soft {
+  0%   { opacity: 0;    }
+  10%  { opacity: 0.65; }
+  70%  { opacity: 0.65; }
+  100% { opacity: 0;    }
+}
+@keyframes lim-cpv-agent-pulse-sharp {
+  0%   { opacity: 0;    }
+  8%   { opacity: 0.85; }
+  65%  { opacity: 0.85; }
+  100% { opacity: 0;    }
+}
+@media (prefers-reduced-motion: reduce) {
+  .lim-cpv-agent.is-pulsing-success::after,
+  .lim-cpv-agent.is-pulsing-warning::after,
+  .lim-cpv-agent.is-pulsing-error::after {
+    animation: none;
+  }
+}
 .lim-cpv-agent--green { box-shadow: inset 3px 0 0 var(--green); }
-.lim-cpv-agent-head { display: flex; align-items: center; gap: 8px; }
-.lim-cpv-agent-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.lim-cpv-agent--amber { box-shadow: inset 3px 0 0 var(--amber); }
+.lim-cpv-agent--red   {
+  box-shadow: inset 3px 0 0 var(--red);
+  background: color-mix(in oklab, var(--red) 8%, var(--bg-2));
+}
+.lim-cpv-agent--gray  { box-shadow: inset 3px 0 0 var(--ink-3); }
+
+/* Head: dot + name (left, flex-grow), cadence label (right) */
+.lim-cpv-agent-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.lim-cpv-agent-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  box-sizing: border-box;
+}
 .lim-cpv-agent-dot--green { background: var(--green); }
 .lim-cpv-agent-dot--amber { background: var(--amber); }
 .lim-cpv-agent-dot--red   { background: var(--red); animation: lim-cpv-blink 1.6s infinite; }
+.lim-cpv-agent-dot--gray  {
+  background: transparent;
+  border: 1.5px solid var(--ink-3);
+}
 @keyframes lim-cpv-blink { 50% { opacity: 0.5; } }
 .lim-cpv-agent-name {
-  font-size: 14px; font-weight: 700; letter-spacing: 0.02em;
-  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
 }
-.lim-cpv-agent-runs { font-size: 12px; font-weight: 700; color: var(--ink-3); font-feature-settings: 'tnum' 1; }
-.lim-cpv-spark { display: flex; align-items: flex-end; gap: 1px; height: 28px; }
-.lim-cpv-spark-bar { flex: 1; min-height: 1px; }
-.lim-cpv-agent-foot {
-  display: flex; flex-direction: column; gap: 2px;
-  font-size: 11px; line-height: 1.35;
+.lim-cpv-agent-cadence {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--ink-3);
+  text-transform: lowercase;
+  white-space: nowrap;
+  font-feature-settings: 'tnum' 1;
 }
-.lim-cpv-agent-action { color: var(--ink-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.lim-cpv-agent-err    { color: var(--red); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.lim-cpv-agent-time   { color: var(--ink-3); font-size: 10px; letter-spacing: 0.04em; }
+
+/* Description: hidden by default, slides in on hover (or on
+ * .is-expanded for touch tap). Left rule + 8px indent so it visually
+ * "hangs off" the cadence label. Honors prefers-reduced-motion.    */
+.lim-cpv-agent-desc {
+  font-size: 11px;
+  color: var(--ink-2);
+  line-height: 1.4;
+  border-left: 2px solid var(--ink-3);
+  padding-left: 8px;
+  margin-left: 17px;       /* aligns under name, past dot+gap */
+  margin-top: 0;
+  max-height: 0;
+  opacity: 0;
+  overflow: hidden;
+  transition:
+    max-height 0.2s ease-out,
+    opacity 0.2s ease-out,
+    margin-top 0.2s ease-out;
+}
+@media (hover: hover) {
+  .lim-cpv-agent:hover .lim-cpv-agent-desc {
+    max-height: 90px;
+    opacity: 1;
+    margin-top: 4px;
+  }
+}
+.lim-cpv-agent.is-expanded .lim-cpv-agent-desc {
+  max-height: 90px;
+  opacity: 1;
+  margin-top: 4px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .lim-cpv-agent-desc { transition: none; }
+}
+
+/* Sparkline */
+.lim-cpv-spark {
+  display: flex;
+  align-items: flex-end;
+  gap: 1px;
+  height: 32px;
+}
+.lim-cpv-spark-bar {
+  flex: 1;
+  min-height: 1px;
+  background: var(--ink-3);
+}
+
+/* Bold operational metric — the headline counter */
+.lim-cpv-agent-metric {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--ink);
+  letter-spacing: 0.01em;
+  font-feature-settings: 'tnum' 1;
+  line-height: 1.3;
+}
+
+/* Footer: <last-run-ago> · <next-run> */
+.lim-cpv-agent-footer {
+  margin-top: auto;
+  font-size: 11px;
+  color: var(--ink-3);
+  letter-spacing: 0.02em;
+  font-feature-settings: 'tnum' 1;
+}
+
+/* Placeholder body for cards not yet implemented (Turns 4–5 swap in) */
+.lim-cpv-agent-placeholder {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--ink-3);
+  font-size: 11px;
+  font-style: italic;
+  letter-spacing: 0.02em;
+}
 
 /* ── PIPELINE KANBAN — full /pipeline route ─────────────────────────────── */
 .lim-cpv-kanban {
@@ -478,38 +692,73 @@
 .lim-cpv-shoot-dot--red   { background: var(--red);    animation: lim-cpv-blink 1.6s infinite; }
 .lim-cpv-shoot-dot--gray  { background: var(--ink-3); }
 
-/* ── INTEGRATIONS (external systems list) ───────────────────────────────── */
-.lim-cpv-int-list { display: flex; flex-direction: column; gap: 3px; }
-.lim-cpv-int { background: var(--bg-2); }
-.lim-cpv-int.is-open { background: var(--bg-3); }
-.lim-cpv-int-head {
-  width: 100%; border: none; background: transparent;
-  display: flex; align-items: center; gap: 10px;
-  padding: 9px 14px;
-  cursor: pointer; font-family: inherit; color: var(--ink); text-align: left;
+/* ── INTEGRATIONS pill strip ────────────────────────────────────────────── */
+/* Single horizontal row of pills. ~50–60px target panel height (one pill
+ * row plus the padding). Pills wrap on narrow widths so half-column
+ * layouts (laptop two-up) and mobile remain usable; portrait Studio
+ * Display always renders a single line.                                    */
+.lim-cpv-int-strip {
+  background: var(--bg-2);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  padding: 10px 14px;
+  min-height: 48px;
 }
-.lim-cpv-int-dot { width: 8px; height: 8px; flex-shrink: 0; }
-.lim-cpv-int-dot--green { background: var(--green); }
-.lim-cpv-int-dot--amber { background: var(--amber); }
-.lim-cpv-int-dot--red   { background: var(--red); }
-.lim-cpv-int-dot--neutral { background: var(--ink-3); }
-.lim-cpv-int-name { font-size: 13px; font-weight: 700; min-width: 96px; }
-.lim-cpv-int-status { font-size: 11px; font-weight: 700; letter-spacing: 0.04em; }
-.lim-cpv-int-status--green { color: var(--green); }
-.lim-cpv-int-status--amber { color: var(--amber); }
-.lim-cpv-int-status--red   { color: var(--red); }
-.lim-cpv-int-sep { color: var(--ink-3); font-size: 11px; }
-.lim-cpv-int-last { font-size: 11px; color: var(--ink-2); flex: 1; }
-.lim-cpv-int-chev { font-size: 16px; font-weight: 700; color: var(--ink-3); width: 14px; text-align: center; }
-.lim-cpv-int-events {
-  padding: 4px 14px 12px 32px;
-  display: flex; flex-direction: column; gap: 3px;
+.lim-cpv-int-pill {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  background: var(--bg-3);
+  font-size: 11px;
+  color: var(--ink);
+  cursor: default;
 }
-.lim-cpv-int-event {
-  font-size: 11px; color: var(--ink-2); line-height: 1.4;
-  padding: 2px 0; border-bottom: 1px dashed var(--rule);
+.lim-cpv-int-pill-dot {
+  width: 7px;
+  height: 7px;
+  background: var(--ink-3);
+  flex-shrink: 0;
 }
-.lim-cpv-int-event:last-child { border-bottom: none; }
+.lim-cpv-int-pill--connected .lim-cpv-int-pill-dot { background: var(--green); }
+.lim-cpv-int-pill--idle      .lim-cpv-int-pill-dot { background: var(--ink-3); }
+.lim-cpv-int-pill-name {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--ink);
+}
+.lim-cpv-int-pill-ago {
+  font-size: 11px;
+  color: var(--ink-2);
+  font-feature-settings: 'tnum' 1;
+}
+
+/* CSS-only tooltip with the full last-event detail. Only fires on
+ * hover-capable pointers; touch devices fall back to the browser's
+ * native title-attribute long-press tooltip.                                */
+@media (hover: hover) {
+  .lim-cpv-int-pill[data-tooltip]:hover::after {
+    content: attr(data-tooltip);
+    position: absolute;
+    bottom: calc(100% + 6px);
+    left: 50%;
+    transform: translateX(-50%);
+    background: var(--bg-2);
+    color: var(--ink);
+    border: 1px solid var(--rule);
+    padding: 4px 8px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0;
+    white-space: nowrap;
+    z-index: 10;
+    pointer-events: none;
+  }
+}
 
 /* ── ACTIVITY (live event stream) — reuses .lim-c-log ───────────────────── */
 .lim-cpv-activity {
@@ -624,18 +873,15 @@
 .lim-cpl-pipe--stack .lim-cpl-pipe-name { flex: 1; font-size: 11px; }
 .lim-cpl-pipe--stack .lim-cpl-pipe-flags { margin-top: 0; }
 
-/* MacBook Air: 7 agents in a single row, no 7th-spans-2 rule */
-@media (min-width: 1100px) and (max-width: 1500px) and (orientation: landscape) {
-  .lim-cpv-agents { grid-template-columns: repeat(7, 1fr); }
-  .lim-cpv-agents > .lim-cpv-agent:nth-child(7) { grid-column: auto; }
-  .lim-cpv-agent { min-height: 130px; }
-  .lim-cpv-spark { height: 24px; }
+/* Tablet / narrow laptop: 2-column AGENTS grid (still readable cards) */
+@media (max-width: 900px) {
+  .lim-cpv-agents { grid-template-columns: repeat(2, 1fr); }
+  .lim-cpv-agent { min-height: 148px; padding: 12px 14px; }
 }
 
 /* iPhone: stack everything */
 @media (max-width: 600px) {
   .lim-cpv-agents { grid-template-columns: 1fr; gap: 4px; }
-  .lim-cpv-agents > .lim-cpv-agent:nth-child(7) { grid-column: auto; }
   .lim-cpv-agent { min-height: 0; padding: 10px 14px; }
   .lim-cpv-spark { display: none; }
   .lim-cpv-hero { padding: 12px 14px 14px; }
@@ -649,9 +895,10 @@
   }
   .lim-cpv-shoot-status { grid-column: 1 / -1; font-size: 10px; }
   .lim-cpv-editors { grid-template-columns: 1fr; }
-  .lim-cpv-int-name { min-width: 80px; font-size: 12px; }
-  .lim-cpv-int-last { font-size: 10px; }
-  .lim-cpv-int-status { font-size: 10px; }
+  .lim-cpv-int-strip { gap: 4px 6px; padding: 8px 10px; min-height: 0; }
+  .lim-cpv-int-pill { padding: 3px 8px; gap: 5px; }
+  .lim-cpv-int-pill-name { font-size: 10px; }
+  .lim-cpv-int-pill-ago { font-size: 10px; }
   .lim-cpv-activity { max-height: 240px; }
   .lim-cpl-pipe-col { padding: 10px 12px; }
 }
@@ -825,7 +1072,7 @@
 [data-glass='on'] .lim-cpv-health,
 [data-glass='on'] .lim-cpv-signals,
 [data-glass='on'] .lim-cpv-shoot,
-[data-glass='on'] .lim-cpv-int,
+[data-glass='on'] .lim-cpv-int-strip,
 [data-glass='on'] .lim-cpv-activity,
 [data-glass='on'] .lim-cpl-pipe-col,
 [data-glass='on'] .lim-c-log,
@@ -844,7 +1091,7 @@
 [data-glass='on'] .lim-cpv-editor,
 [data-glass='on'] .lim-cpv-health,
 [data-glass='on'] .lim-cpv-shoot,
-[data-glass='on'] .lim-cpv-int,
+[data-glass='on'] .lim-cpv-int-strip,
 [data-glass='on'] .lim-cpl-pipe-col {
   border: 1px solid var(--rule);
 }

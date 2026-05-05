@@ -165,13 +165,13 @@ export default function Ops() {
         {/* Agents + Upcoming Shoots (two-up on Studio Display, stacks on phone) */}
         {!isLaptop ? (
           <div className="lim-grid-2">
-            <AgentGrid logs={logs.data} loading={logs.loading} />
+            <AgentGrid campusId={campusId} />
             <UpcomingShoots />
           </div>
         ) : (
           <>
             {/* Laptop: 7-agent row on its own, then UpcomingShoots full-width */}
-            <AgentGrid logs={logs.data} loading={logs.loading} />
+            <AgentGrid campusId={campusId} />
             <UpcomingShoots />
           </>
         )}
@@ -229,15 +229,21 @@ export default function Ops() {
               <EditorCapacity campusId={campusId} />
             </div>
             <PerformanceSignals campusId={campusId} />
-            <div className="lim-grid-2">
-              <IntegrationHealth logs={logs.data} inbox={inboxRow} />
+            {/* Left col: INTEGRATIONS pill strip on top, ACTIVITY feed
+             * below filling remaining vertical space. Right col:
+             * SYSTEM PULSE full-height. Both columns end at the same
+             * vertical position. */}
+            <div className="lim-pulse-row">
+              <div className="lim-pulse-left-stack">
+                <IntegrationHealth logs={logs.data} inbox={inboxRow} />
+                <LiveEventStream
+                  logs={logs.data}
+                  loading={logs.loading}
+                  error={logs.error}
+                />
+              </div>
               <SystemHealthStrip pulse={pulse} />
             </div>
-            <LiveEventStream
-              logs={logs.data}
-              loading={logs.loading}
-              error={logs.error}
-            />
           </>
         ) : (
           <div className="lim-bottom-cols">
