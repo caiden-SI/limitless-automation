@@ -266,9 +266,12 @@ export function actionItems({ videos = [], editors = [], logs = [], inbox = null
 
   // 2. Editor overload — one item per overloaded editor.
   // Detail adds the over-by count; headline already states name + count.
+  // Capacity = work in the editor's queue (READY + IN EDITING). IDEA-with-
+  // assignee is pre-pipeline and doesn't count. Must match EditorCapacity.jsx
+  // or the warning fires off a different threshold than the user sees.
   const editorCounts = {};
   for (const v of videos) {
-    if (v.assignee_id && v.status === 'IN EDITING') {
+    if (v.assignee_id && (v.status === 'READY FOR EDITING' || v.status === 'IN EDITING')) {
       editorCounts[v.assignee_id] = (editorCounts[v.assignee_id] || 0) + 1;
     }
   }

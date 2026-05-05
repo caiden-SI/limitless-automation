@@ -99,8 +99,10 @@ function buildTranscriptText(sentences) {
 /**
  * Claude pass over a transcript's sentences. Returns an array of
  * { text, assignee_email? } objects. Empty array when no action items.
+ * @param {object} transcript - Fireflies transcript with sentences/participants
+ * @param {string} [campusId] - Campus UUID for tenant-scoped telemetry
  */
-async function extractActionItems(transcript) {
+async function extractActionItems(transcript, campusId) {
   const transcriptForPrompt = buildTranscriptText(transcript.sentences);
   const participants = (transcript.participants || [])
     .map((p) => (typeof p === 'string' ? p : `${p?.name || ''} <${p?.email || ''}>`))
@@ -113,7 +115,7 @@ Participants: ${participants || '(unknown)'}
 Transcript:
 ${transcriptForPrompt}`;
 
-  const result = await claude.askJson({ system: EXTRACTION_SYSTEM, prompt, maxTokens: 2048 });
+  const result = await claude.askJson({ system: EXTRACTION_SYSTEM, prompt, maxTokens: 2048, callerAgent: 'fireflies', campusId });
   const items = Array.isArray(result?.action_items) ? result.action_items : [];
   return items
     .filter((i) => i && typeof i.text === 'string' && i.text.trim().length > 0)
@@ -195,7 +197,7 @@ async function retryPendingClickUpCreates(stats) {
 async function syncActionItemsForTranscript(transcript, campusId, stats) {
   let items;
   try {
-    items = await extractActionItems(transcript);
+    items = await extractActionItems(transcript, campusId);
   } catch (err) {
     await log({
       campusId,

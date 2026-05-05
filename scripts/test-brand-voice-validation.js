@@ -327,7 +327,7 @@ async function main() {
     ].join('\n');
     const prompt = `STUDENT: ${alex.name}\nSTUDENT CONTEXT:\n${alex.claude_project_context.slice(0, 2000)}\nReturn a single concept about AI education for kids.`;
 
-    const raw = await claudeModule.askJson({ system, prompt, maxTokens: 1500 });
+    const raw = await claudeModule.askJson({ system, prompt, maxTokens: 1500, callerAgent: 'scripting', campusId: AUSTIN_ID });
     // Accept both array-of-one and single object shape.
     const concept = Array.isArray(raw) ? raw[0] : raw;
     assert(concept && typeof concept === 'object', 'Claude returned parseable concept');

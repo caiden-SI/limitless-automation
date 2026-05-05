@@ -69,9 +69,12 @@ export function buildCssVars({ theme, bg, alpha }) {
     '--bg-2':       glass ? (dark ? `rgba(20,20,24,${a})`  : `rgba(255,255,255,${a})`)  : (dark ? '#13161a' : '#ececea'),
     '--bg-3':       glass ? (dark ? `rgba(28,32,38,${a2})` : `rgba(255,255,255,${a2})`) : (dark ? '#1c2026' : '#e2e2df'),
     '--ink':        dark ? '#f5f5f2' : '#0a0c0e',
-    '--ink-2':      dark ? '#a8aaad' : '#54565a',
-    '--ink-3':      dark ? '#62656b' : '#9a9ca0',
-    '--rule':       dark ? '#262a30' : '#d8d8d4',
+    // Dark-mode --ink-2 / --ink-3 / --rule lifted from the original near-bg
+    // values so secondary text (SIGNALS prose, editor capacity off-state pip
+    // borders) stays legible. Light-mode values unchanged.
+    '--ink-2':      dark ? '#dcdcd9' : '#54565a',
+    '--ink-3':      dark ? '#a8a8a4' : '#9a9ca0',
+    '--rule':       dark ? 'rgba(255,255,255,0.18)' : '#d8d8d4',
     '--accent':     'oklch(0.62 0.16 148)',
     '--green':      dark ? '#5cd18b' : '#1c8a3c',
     '--amber':      dark ? '#f0b03a' : '#b8721a',

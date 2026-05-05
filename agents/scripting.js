@@ -423,7 +423,7 @@ async function generateConcepts({ campusId, student, context, validatorContext, 
 
     let raw;
     try {
-      raw = await askJson({ system, prompt, maxTokens: 3000 });
+      raw = await askJson({ system, prompt, maxTokens: 3000, callerAgent: 'scripting', campusId });
     } catch (err) {
       lastError = err.message;
       if (attempt === 2) throw new Error(`Claude failed to return valid JSON after retry: ${err.message}`);

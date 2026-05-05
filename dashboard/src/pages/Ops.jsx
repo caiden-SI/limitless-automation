@@ -153,7 +153,6 @@ export default function Ops() {
           campuses={campuses}
           onCampus={setCampusId}
           campusLoading={campusLoading}
-          totals={totals}
           pulseCells={pulse.cells}
           lastFetchedAt={lastFetchedAt}
         />

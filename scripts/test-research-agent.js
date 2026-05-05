@@ -51,7 +51,8 @@ async function run() {
     console.log('1. Testing Claude classification...');
     const classification = await research.classifyTranscript(
       SAMPLE_VIDEOS[1].transcript,
-      'tiktok'
+      'tiktok',
+      CAMPUS_ID,
     );
     console.log(`   hook_type: ${classification.hook_type}`);
     console.log(`   format:    ${classification.format}`);
@@ -71,7 +72,8 @@ async function run() {
     console.log('\n2. Testing transcript generation from description...');
     const transcript = await research.generateTranscript(
       SAMPLE_VIDEOS[0].description,
-      'tiktok'
+      'tiktok',
+      CAMPUS_ID,
     );
     console.log(`   Generated transcript (${transcript.length} chars):`);
     console.log(`   "${transcript.slice(0, 150)}..."`);
@@ -80,8 +82,8 @@ async function run() {
     // Test 3: Insert entries into research_library
     console.log('\n3. Inserting test entries into research_library...');
     for (const video of SAMPLE_VIDEOS) {
-      const t = video.transcript || await research.generateTranscript(video.description, video.platform);
-      const c = await research.classifyTranscript(t, video.platform);
+      const t = video.transcript || await research.generateTranscript(video.description, video.platform, CAMPUS_ID);
+      const c = await research.classifyTranscript(t, video.platform, CAMPUS_ID);
 
       const { error } = await supabase.from('research_library').insert({
         campus_id: CAMPUS_ID,

@@ -282,12 +282,14 @@ async function fetchInfluencerTranscripts(influencers, campusId) {
 // Industry report generation (Section 6 — fully automated)
 // ---------------------------------------------------------------------------
 
-async function generateIndustryReport(niche, influencerHandles) {
+async function generateIndustryReport(niche, influencerHandles, campusId) {
   const influencerList = influencerHandles.length > 0
     ? `Key influencers in this space: ${influencerHandles.join(', ')}`
     : '';
 
   return ask({
+    callerAgent: 'onboarding',
+    campusId,
     system: 'You are a market research analyst. Write a concise industry report (400-600 words) in markdown format.',
     prompt: `Write an industry report for this niche: "${niche}"
 
@@ -308,7 +310,7 @@ Be specific and actionable. Use real industry context where possible.`,
 // Context document synthesis
 // ---------------------------------------------------------------------------
 
-async function synthesizeContextDocument(studentName, answers, influencerTranscripts, industryReport) {
+async function synthesizeContextDocument(studentName, answers, influencerTranscripts, industryReport, campusId) {
   const influencerSection = influencerTranscripts
     .filter((r) => r.success)
     .map((r) => `**@${r.handle}** — ${r.transcripts.length} transcript(s) collected`)
@@ -366,6 +368,8 @@ Preferred content pillars, content creator references, topics to avoid, existing
 On-camera comfort assessment based on their answers, optimal content approach (2–3 sentences), key storytelling angles (2–3 most compelling narratives), production constraints and opportunities, priority content pillars ranked 1–5 for their situation`;
 
   return ask({
+    callerAgent: 'onboarding',
+    campusId,
     system: 'You are a content strategist synthesizing a student context document. Output clean markdown. Be thorough and use the student\'s own words where possible.',
     prompt,
     maxTokens: 4096,
@@ -642,6 +646,8 @@ async function handleMessage({ studentId, campusId, studentName, message }) {
     // Ask Claude to probe for a better answer
     const probePrompt = buildSystemPrompt(studentName, answers, currentQ, currentQ.section);
     const probeReply = await askConversation({
+      callerAgent: 'onboarding',
+      campusId,
       system: probePrompt + '\n\nIMPORTANT: The student just gave a very brief or vague answer. Probe once — ask them to elaborate in a friendly way. Do NOT accept this answer and move on. Say something like "Can you tell me a bit more about that?" or ask a more specific version of the question.',
       messages: history,
       maxTokens: 256,
@@ -740,6 +746,8 @@ async function handleMessage({ studentId, campusId, studentName, message }) {
     }
 
     const reply = await askConversation({
+      callerAgent: 'onboarding',
+      campusId,
       system: systemPrompt,
       messages: history,
       maxTokens: 512,
@@ -774,6 +782,7 @@ async function handleMessage({ studentId, campusId, studentName, message }) {
       industryReport = await generateIndustryReport(
         answers.niche || '',
         influencerTranscripts.filter((r) => r.success).map((r) => r.handle),
+        campusId,
       );
       await updateSession(session.id, { industry_report: industryReport });
       await log({ campusId, agent: AGENT_NAME, action: 'industry_report_generated', payload: { length: industryReport.length } });
@@ -797,6 +806,7 @@ async function handleMessage({ studentId, campusId, studentName, message }) {
       answers,
       influencerTranscripts,
       industryReport,
+      campusId,
     );
     await log({ campusId, agent: AGENT_NAME, action: 'context_document_synthesized', payload: { length: contextDocument.length } });
   } catch (err) {
