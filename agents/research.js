@@ -106,7 +106,7 @@ async function run(campusId, options = {}) {
         // Get or generate transcript
         let transcript = video.transcript;
         if (!transcript && video.description) {
-          transcript = await generateTranscript(video.description, video.platform);
+          transcript = await generateTranscript(video.description, video.platform, campusId);
         }
         if (!transcript) {
           stats.errors++;
@@ -114,7 +114,7 @@ async function run(campusId, options = {}) {
         }
 
         // Classify with Claude
-        const classification = await classifyTranscript(transcript, video.platform);
+        const classification = await classifyTranscript(transcript, video.platform, campusId);
 
         // Insert into research_library
         const { error: insertErr } = await supabase.from('research_library').insert({
@@ -189,10 +189,13 @@ async function run(campusId, options = {}) {
  * Classify a single transcript using Claude.
  * @param {string} transcript - Video transcript text
  * @param {string} platform - Source platform
+ * @param {string} [campusId] - Campus UUID for tenant-scoped telemetry
  * @returns {Promise<{ hook_type: string, format: string, topic_tags: string[] }>}
  */
-async function classifyTranscript(transcript, platform) {
+async function classifyTranscript(transcript, platform, campusId) {
   const result = await askJson({
+    callerAgent: 'research',
+    campusId,
     system: CLASSIFICATION_SYSTEM,
     prompt: `Platform: ${platform}\n\nTranscript:\n${transcript.slice(0, 2000)}`,
     maxTokens: 256,
@@ -210,10 +213,13 @@ async function classifyTranscript(transcript, platform) {
  * Used when the scraper doesn't return a transcript directly.
  * @param {string} description - Video caption/description
  * @param {string} platform - Source platform
+ * @param {string} [campusId] - Campus UUID for tenant-scoped telemetry
  * @returns {Promise<string>}
  */
-async function generateTranscript(description, platform) {
+async function generateTranscript(description, platform, campusId) {
   const text = await ask({
+    callerAgent: 'research',
+    campusId,
     system: TRANSCRIPT_SYSTEM,
     prompt: `Platform: ${platform}\nVideo description: ${description.slice(0, 1000)}`,
     maxTokens: 512,

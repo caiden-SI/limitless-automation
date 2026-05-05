@@ -159,7 +159,7 @@ async function checkCaptions(video, campusId) {
   issues.push(...brandIssues);
 
   // Claude-powered formatting and punctuation check
-  const formatIssues = await checkCaptionFormatting(cues, brandTerms);
+  const formatIssues = await checkCaptionFormatting(cues, brandTerms, campusId);
   issues.push(...formatIssues);
 
   return { issues, cues, srtFound: true };
@@ -245,14 +245,19 @@ function levenshtein(a, b) {
 
 /**
  * Use Claude to check caption formatting and punctuation consistency.
+ * @param {Array} cues - Parsed SRT cues
+ * @param {string[]} brandTerms - Campus brand dictionary terms
+ * @param {string} [campusId] - Campus UUID for tenant-scoped telemetry
  */
-async function checkCaptionFormatting(cues, brandTerms) {
+async function checkCaptionFormatting(cues, brandTerms, campusId) {
   const srtPreview = cues
     .slice(0, 50) // Limit to first 50 cues to stay within token budget
     .map((c) => `${c.index}\n${c.startTime} --> ${c.endTime}\n${c.text}`)
     .join('\n\n');
 
   const result = await askJson({
+    callerAgent: 'qa',
+    campusId,
     system: `You are a video caption QA reviewer for a media agency. Check captions for formatting and punctuation issues. Brand terms that must be spelled/capitalized exactly: ${brandTerms.join(', ')}.`,
     prompt: `Review these SRT captions for formatting and punctuation issues. Check for:
 1. Inconsistent capitalization at start of lines
@@ -395,6 +400,8 @@ async function checkStutter(video, campusId, cues) {
     .join('\n');
 
   const result = await askJson({
+    callerAgent: 'qa',
+    campusId,
     system: `You are a video editor QA assistant. Analyze caption transcripts for speech disfluencies that should be edited out of the final video. Be precise about timecodes.`,
     prompt: `Analyze this transcript for stutters, filler words, and false starts that should have been edited out.
 
