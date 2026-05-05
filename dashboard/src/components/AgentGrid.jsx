@@ -28,7 +28,7 @@ const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
 // Pulse durations match the CSS keyframes; the +100ms buffer keeps
 // the class set until the animation has finished painting.
-const PULSE_DURATION_MS = { success: 1700, warning: 1700, error: 1000 };
+const PULSE_DURATION_MS = { success: 4000, warning: 4000, error: 3000 };
 
 export default function AgentGrid({ logs }) {
   const [expandedName, setExpandedName] = useState(null);

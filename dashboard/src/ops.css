@@ -260,24 +260,31 @@
 }
 .lim-cpv-agent.is-pulsing-success::after {
   --pulse-color: var(--green);
-  animation: lim-cpv-agent-pulse-soft 1700ms ease-out;
+  animation: lim-cpv-agent-pulse-soft 4000ms ease-out;
 }
 .lim-cpv-agent.is-pulsing-warning::after {
   --pulse-color: var(--amber);
-  animation: lim-cpv-agent-pulse-soft 1700ms ease-out;
+  animation: lim-cpv-agent-pulse-soft 4000ms ease-out;
 }
 .lim-cpv-agent.is-pulsing-error::after {
   --pulse-color: var(--red);
-  animation: lim-cpv-agent-pulse-sharp 1000ms ease-out;
+  animation: lim-cpv-agent-pulse-sharp 3000ms ease-out;
 }
+/* Held-peak shape: fast fade-in to peak, hold across the middle,
+ * slow fade-out. Gives the operator time to look up, register
+ * which card pulsed, and read the headline metric before the
+ * wash drops. Content sits on z-index 1 above the ::after wash,
+ * so text/sparkline stay legible at the held peak.                */
 @keyframes lim-cpv-agent-pulse-soft {
   0%   { opacity: 0;    }
-  12%  { opacity: 0.20; }
+  10%  { opacity: 0.65; }
+  70%  { opacity: 0.65; }
   100% { opacity: 0;    }
 }
 @keyframes lim-cpv-agent-pulse-sharp {
   0%   { opacity: 0;    }
-  10%  { opacity: 0.40; }
+  8%   { opacity: 0.85; }
+  65%  { opacity: 0.85; }
   100% { opacity: 0;    }
 }
 @media (prefers-reduced-motion: reduce) {
