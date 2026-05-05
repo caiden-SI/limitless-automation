@@ -1,5 +1,5 @@
 // Live event stream — ported from PortraitActivity. Real agent_logs feed
-// with hover-pause and an agent filter. Errors expand inline.
+// with an agent filter. Errors expand inline.
 
 import { useMemo, useState } from 'react';
 import { AGENT_BY_NAME } from '../lib/agents';
@@ -24,7 +24,6 @@ function logTime(iso) {
 }
 
 export default function LiveEventStream({ logs, loading, error, limit = 18 }) {
-  const [paused, setPaused] = useState(false);
   const [filter, setFilter] = useState('all');
 
   const visible = useMemo(() => {
@@ -37,11 +36,7 @@ export default function LiveEventStream({ logs, loading, error, limit = 18 }) {
   }, [logs, filter, limit]);
 
   return (
-    <section
-      onMouseEnter={() => setPaused(true)}
-      onMouseLeave={() => setPaused(false)}
-      aria-label="Live event stream"
-    >
+    <section aria-label="Live event stream">
       <div className="lim-section-title">
         <h3>ACTIVITY</h3>
         <div className="lim-stream-controls">
@@ -57,9 +52,7 @@ export default function LiveEventStream({ logs, loading, error, limit = 18 }) {
               <option key={a.name} value={a.name}>{a.label.toUpperCase()}</option>
             ))}
           </select>
-          <span className="lim-section-title__right">
-            {paused ? 'PAUSED' : 'LIVE · 10s'}
-          </span>
+          <span className="lim-section-title__right">LIVE · 10s</span>
         </div>
       </div>
 
