@@ -65,7 +65,7 @@ export default function LiveEventStream({ logs, loading, error, limit = 18 }) {
           </div>
         )}
         {visible.map((l) => (
-          <div key={l.id} className={`lim-c-log lim-c-log--${l.status || 'success'}`}>
+          <div key={l.id} data-agent={l.agent_name} className={`lim-c-log lim-c-log--${l.status || 'success'}`}>
             <span className="lim-c-log-time">{logTime(l.created_at)}</span>
             <span className={`lim-c-log-agent lim-c-log-agent--${l.status || 'success'}`}>
               {AGENT_LABEL[l.agent_name] || l.agent_name}

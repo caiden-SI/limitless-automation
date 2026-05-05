@@ -539,6 +539,18 @@
 .lim-c-log-agent--error   { color: var(--red); }
 .lim-c-log-agent--warning { color: var(--amber); }
 .lim-c-log-msg { font-size: 12px; flex: 1; line-height: 1.4; }
+/* Health rows tint the message text by status — every other agent's
+ * "success" is implicit so tinting them adds noise without information.
+ * The detail span (.lim-c-log-err) defaults to red, which is wrong for
+ * a successful/warning health ping (the detail is informational, not
+ * an error), so override it on health rows only. Non-health rows keep
+ * the default red — those represent real failures. */
+.lim-c-log[data-agent="health"].lim-c-log--success .lim-c-log-msg { color: var(--green); }
+.lim-c-log[data-agent="health"].lim-c-log--warning .lim-c-log-msg { color: var(--amber); }
+.lim-c-log[data-agent="health"].lim-c-log--error   .lim-c-log-msg { color: var(--red); }
+.lim-c-log[data-agent="health"].lim-c-log--success .lim-c-log-err { color: var(--green); }
+.lim-c-log[data-agent="health"].lim-c-log--warning .lim-c-log-err { color: var(--amber); }
+.lim-c-log[data-agent="health"].lim-c-log--error   .lim-c-log-err { color: var(--red); }
 .lim-c-log-err {
   display: block; font-size: 11px;
   color: var(--red); font-weight: 600; margin-top: 2px;
