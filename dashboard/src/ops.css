@@ -236,8 +236,57 @@
   transition: background 0.15s;
   min-height: 168px;
   position: relative;
+  /* isolate creates a stacking context so the pulse overlay
+   * (::after, z-index 0) sits between the card's bg + spine and
+   * the children (z-index 1) rather than on top of everything.   */
+  isolation: isolate;
+  overflow: hidden;
 }
 .lim-cpv-agent:hover { background: var(--bg-3); }
+.lim-cpv-agent > * { position: relative; z-index: 1; }
+
+/* Pulse overlay — full-cell wash that fades in/out when a new
+ * agent_logs row matching this card arrives. Pseudo-element so the
+ * card's spine box-shadow stays visible (the wash tints over it,
+ * which is the intended "whole-cell pulse" feel).                  */
+.lim-cpv-agent::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background: var(--pulse-color, transparent);
+  opacity: 0;
+}
+.lim-cpv-agent.is-pulsing-success::after {
+  --pulse-color: var(--green);
+  animation: lim-cpv-agent-pulse-soft 1700ms ease-out;
+}
+.lim-cpv-agent.is-pulsing-warning::after {
+  --pulse-color: var(--amber);
+  animation: lim-cpv-agent-pulse-soft 1700ms ease-out;
+}
+.lim-cpv-agent.is-pulsing-error::after {
+  --pulse-color: var(--red);
+  animation: lim-cpv-agent-pulse-sharp 1000ms ease-out;
+}
+@keyframes lim-cpv-agent-pulse-soft {
+  0%   { opacity: 0;    }
+  12%  { opacity: 0.12; }
+  100% { opacity: 0;    }
+}
+@keyframes lim-cpv-agent-pulse-sharp {
+  0%   { opacity: 0;    }
+  10%  { opacity: 0.25; }
+  100% { opacity: 0;    }
+}
+@media (prefers-reduced-motion: reduce) {
+  .lim-cpv-agent.is-pulsing-success::after,
+  .lim-cpv-agent.is-pulsing-warning::after,
+  .lim-cpv-agent.is-pulsing-error::after {
+    animation: none;
+  }
+}
 .lim-cpv-agent--green { box-shadow: inset 3px 0 0 var(--green); }
 .lim-cpv-agent--amber { box-shadow: inset 3px 0 0 var(--amber); }
 .lim-cpv-agent--red   {

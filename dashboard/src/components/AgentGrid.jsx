@@ -15,18 +15,9 @@
 // label/cron — so per-agent logic stays in lib/agents.js, not
 // inlined here.
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { AGENT_REGISTRY, nextCronFire } from '../lib/agents';
 import { timeAgo } from '../lib/health';
-
-const FULL_IMPL = new Set([
-  'pipeline',
-  'footage-scan',
-  'qa',
-  'research',
-  'performance',
-  'scripting',
-]);
 
 // Object-property iteration order is insertion order in modern
 // engines, and AGENT_REGISTRY is declared in 3×3 grid order — so
@@ -34,6 +25,10 @@ const FULL_IMPL = new Set([
 const REGISTRY_ORDER = Object.values(AGENT_REGISTRY);
 
 const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+// Pulse durations match the CSS keyframes; the +100ms buffer keeps
+// the class set until the animation has finished painting.
+const PULSE_DURATION_MS = { success: 1700, warning: 1700, error: 1000 };
 
 export default function AgentGrid({ logs }) {
   const [expandedName, setExpandedName] = useState(null);
@@ -63,27 +58,16 @@ export default function AgentGrid({ logs }) {
       <div className="lim-cpv-agents">
         {REGISTRY_ORDER.map((agent) => {
           const isExpanded = expandedName === agent.name;
-          const onToggle = () =>
-            setExpandedName(isExpanded ? null : agent.name);
-          const rows = perAgentRows[agent.name];
-          if (FULL_IMPL.has(agent.name)) {
-            return (
-              <AgentCard
-                key={agent.name}
-                agent={agent}
-                rows={rows}
-                isExpanded={isExpanded}
-                onToggle={onToggle}
-                now={now}
-              />
-            );
-          }
           return (
-            <PlaceholderCard
+            <AgentCard
               key={agent.name}
               agent={agent}
+              rows={perAgentRows[agent.name]}
               isExpanded={isExpanded}
-              onToggle={onToggle}
+              onToggle={() =>
+                setExpandedName(isExpanded ? null : agent.name)
+              }
+              now={now}
             />
           );
         })}
@@ -96,9 +80,11 @@ function AgentCard({ agent, rows, isExpanded, onToggle, now }) {
   const dot = computeDot(agent, rows, now);
   const headline = agent.headlineMetric(rows, now);
   const footer = computeFooter(agent, rows, now);
+  const pulseClass = useNewRowPulse(rows);
   const className =
     `lim-cpv-agent lim-cpv-agent--${dot}` +
-    (isExpanded ? ' is-expanded' : '');
+    (isExpanded ? ' is-expanded' : '') +
+    (pulseClass ? ` is-pulsing-${pulseClass}` : '');
 
   return (
     <button
@@ -120,28 +106,40 @@ function AgentCard({ agent, rows, isExpanded, onToggle, now }) {
   );
 }
 
-function PlaceholderCard({ agent, isExpanded, onToggle }) {
-  const className =
-    'lim-cpv-agent lim-cpv-agent--gray lim-cpv-agent--placeholder' +
-    (isExpanded ? ' is-expanded' : '');
-  return (
-    <button
-      type="button"
-      className={className}
-      onClick={onToggle}
-      aria-expanded={isExpanded}
-    >
-      <div className="lim-cpv-agent-head">
-        <span className="lim-cpv-agent-dot lim-cpv-agent-dot--gray" />
-        <span className="lim-cpv-agent-name">{agent.name}</span>
-        <span className="lim-cpv-agent-cadence">{agent.cadenceLabel}</span>
-      </div>
-      <div className="lim-cpv-agent-desc">{agent.description}</div>
-      <div className="lim-cpv-agent-placeholder">
-        implementation in a later turn
-      </div>
-    </button>
-  );
+// Detects new-row arrivals by comparing the latest row's id to the
+// previously-rendered latest id. Returns a transient pulse class —
+// 'success' / 'warning' / 'error' — that the CSS keyframe consumes.
+// First-time data arrival is not a pulse; only changes from one
+// populated state to another fire the animation.
+function useNewRowPulse(rows) {
+  const [pulse, setPulse] = useState(null);
+  const prevTopIdRef = useRef(rows[0]?.id ?? null);
+
+  useEffect(() => {
+    const topId = rows[0]?.id ?? null;
+    const prev = prevTopIdRef.current;
+    prevTopIdRef.current = topId;
+
+    if (prev == null) return;
+    if (topId == null) return;
+    if (topId === prev) return;
+
+    const status = (rows[0].status || 'success').toLowerCase();
+    const cls =
+      status === 'error'
+        ? 'error'
+        : status === 'warning'
+          ? 'warning'
+          : 'success';
+    setPulse(cls);
+    const timer = setTimeout(
+      () => setPulse(null),
+      PULSE_DURATION_MS[cls] + 100,
+    );
+    return () => clearTimeout(timer);
+  }, [rows]);
+
+  return pulse;
 }
 
 function Sparkline({ rows, agent, now }) {
