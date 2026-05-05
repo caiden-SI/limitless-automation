@@ -19,7 +19,14 @@ import { useMemo, useState } from 'react';
 import { AGENT_REGISTRY, nextCronFire } from '../lib/agents';
 import { timeAgo } from '../lib/health';
 
-const FULL_IMPL = new Set(['pipeline', 'footage-scan', 'qa']);
+const FULL_IMPL = new Set([
+  'pipeline',
+  'footage-scan',
+  'qa',
+  'research',
+  'performance',
+  'scripting',
+]);
 
 // Object-property iteration order is insertion order in modern
 // engines, and AGENT_REGISTRY is declared in 3×3 grid order — so
@@ -234,16 +241,24 @@ function formatNextCron(cron, now) {
   const diffMin = Math.round(diffMs / 60000);
   if (diffMin < 60) return `next in ${diffMin}m`;
 
+  const hour = next.getHours();
+  const ampm = hour >= 12 ? 'PM' : 'AM';
+  const h12 = hour % 12 || 12;
+  const timeStr = `${h12} ${ampm}`;
+
+  // Weekly crons (day-of-week field is a literal number) always show
+  // the day name — "next Mon at 7 AM" reads as a rhythm, "next at
+  // 7 AM tomorrow" doesn't. Spec acceptance for performance/profile-views.
+  if (isWeeklyCron(cron)) {
+    return `next ${DAY_NAMES[next.getDay()]} at ${timeStr}`;
+  }
+
+  // Daily / sub-daily crons: today/tomorrow framing.
   const todayStr = new Date(now).toDateString();
   const tomorrow = new Date(now);
   tomorrow.setDate(tomorrow.getDate() + 1);
   const tomorrowStr = tomorrow.toDateString();
   const nextStr = next.toDateString();
-
-  const hour = next.getHours();
-  const ampm = hour >= 12 ? 'PM' : 'AM';
-  const h12 = hour % 12 || 12;
-  const timeStr = `${h12} ${ampm}`;
 
   if (nextStr === todayStr) {
     return `next at ${timeStr} ${hour >= 12 ? 'tonight' : 'today'}`;
@@ -252,6 +267,13 @@ function formatNextCron(cron, now) {
     return `next at ${timeStr} tomorrow`;
   }
   return `next ${DAY_NAMES[next.getDay()]} at ${timeStr}`;
+}
+
+function isWeeklyCron(cron) {
+  if (!cron) return false;
+  const parts = cron.trim().split(/\s+/);
+  // Standard 5-field cron: <min> <hour> <dom> <mon> <dow>
+  return parts.length >= 5 && /^\d+(,\d+)*$/.test(parts[4]);
 }
 
 function formatWindowLabel(windowMs) {
