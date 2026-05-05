@@ -57,8 +57,14 @@ export const AGENT_REGISTRY = {
   pipeline: {
     name: 'pipeline',
     sourceAgent: 'pipeline',
+    // Excludes the footage-scan slice. dropbox_scan_complete is the
+    // 15-min footage-scan tick marker (so it belongs to footage-scan,
+    // not pipeline); dropbox_webhook_received is real-time inbound
+    // pipeline traffic and stays here.
     actionFilter: (a) =>
-      !a.startsWith('footage_') && a !== 'dropbox_list_folder_error',
+      !a.startsWith('footage_') &&
+      a !== 'dropbox_list_folder_error' &&
+      a !== 'dropbox_scan_complete',
     cadenceLabel: 'webhook · live',
     cadenceType: 'event',
     cronExpression: null,
@@ -121,8 +127,13 @@ export const AGENT_REGISTRY = {
   'footage-scan': {
     name: 'footage-scan',
     sourceAgent: 'pipeline',
+    // Inverse of the pipeline filter. dropbox_scan_complete is the
+    // every-15-min footage-scan tick marker — counted as "checks"
+    // here, not as pipeline traffic.
     actionFilter: (a) =>
-      a.startsWith('footage_') || a === 'dropbox_list_folder_error',
+      a.startsWith('footage_') ||
+      a === 'dropbox_list_folder_error' ||
+      a === 'dropbox_scan_complete',
     cadenceLabel: 'every 15 min',
     cadenceType: 'cron',
     cronExpression: '*/15 * * * *',

@@ -24,7 +24,23 @@ export function useSupabaseQuery(tableName, queryFn, refreshInterval = 30000, de
   const queryFnRef = useRef(queryFn);
   queryFnRef.current = queryFn;
 
+  // Visibility-aware polling: when the tab is hidden, suspend the
+  // interval entirely. When the tab returns, the effect re-runs, fetches
+  // immediately so the dashboard isn't stale, and resumes the interval.
+  // This keeps polling cost bounded to active viewing — important now
+  // that the AGENTS panel runs 9 per-card queries.
+  const [isVisible, setIsVisible] = useState(
+    typeof document !== 'undefined' ? document.visibilityState !== 'hidden' : true,
+  );
   useEffect(() => {
+    if (typeof document === 'undefined') return;
+    const onChange = () => setIsVisible(document.visibilityState !== 'hidden');
+    document.addEventListener('visibilitychange', onChange);
+    return () => document.removeEventListener('visibilitychange', onChange);
+  }, []);
+
+  useEffect(() => {
+    if (!isVisible) return;
     let cancelled = false;
     const run = async () => {
       try {
@@ -52,7 +68,7 @@ export function useSupabaseQuery(tableName, queryFn, refreshInterval = 30000, de
     // Each call site passes a stable-length array (one per hook), so the
     // dep-array length stays consistent across renders for that hook.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [refreshInterval, ...deps]);
+  }, [refreshInterval, isVisible, ...deps]);
 
   const refetch = useCallback(() => {
     queryFnRef.current(supabase).then(({ data: result, error: err }) => {
@@ -97,6 +113,33 @@ export function useAgentLogs(campusId, limit = 50) {
     },
     10000,
     [campusId, limit],
+  );
+}
+
+/**
+ * Fetch agent_logs for one (campus, agent_name) within a time window.
+ *
+ * Each AGENTS panel card calls this with its sourceAgent + sparkline
+ * window so high-frequency agents don't starve infrequent ones the way
+ * a global LIMIT-based fetch does. `windowMs` is the dependency (stable
+ * across renders); the `since` timestamp is computed at fetch time so
+ * the window naturally slides forward.
+ */
+export function useAgentLogsWindow(campusId, agentName, windowMs, limit = 500) {
+  return useSupabaseQuery(
+    'agent_logs_window',
+    (sb) => {
+      if (!campusId || !agentName) return sb.from('agent_logs').select('id').limit(0);
+      const since = new Date(Date.now() - windowMs).toISOString();
+      return sb.rpc('get_campus_agent_logs_window', {
+        p_campus_id: campusId,
+        p_agent_name: agentName,
+        p_since: since,
+        p_limit: limit,
+      });
+    },
+    10000,
+    [campusId, agentName, windowMs, limit],
   );
 }
 

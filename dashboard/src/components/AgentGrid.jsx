@@ -5,19 +5,22 @@
 //   row 2: research       performance     scripting
 //   row 3: onboarding     fireflies       profile-views
 //
-// Turn 3 fully implements the row-1 trio (pipeline / footage-scan /
-// qa). The other six render placeholder bodies so the 3×3 grid
-// holds its shape; Turns 4–5 swap them in.
+// Each card mounts its own per-(campus, sourceAgent, window) Supabase
+// query via useAgentLogsWindow — so high-frequency agents
+// (pipeline, scripting) don't starve infrequent ones (research,
+// performance, profile-views) the way a global LIMIT-N fetch did.
+// actionFilter applies client-side after fetch (footage-scan +
+// pipeline split a single sourceAgent='pipeline' source by action).
 //
 // Each card pulls everything operational from the registry — its
-// row filter (sourceAgent + optional actionFilter), sparkline
-// window/bars, dot health thresholds, headline metric, cadence
-// label/cron — so per-agent logic stays in lib/agents.js, not
-// inlined here.
+// sparkline window/bars, dot health thresholds, headline metric,
+// cadence label/cron — so per-agent logic stays in lib/agents.js,
+// not inlined here.
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { AGENT_REGISTRY, nextCronFire } from '../lib/agents';
 import { timeAgo } from '../lib/health';
+import { useAgentLogsWindow } from '../lib/hooks';
 
 // Object-property iteration order is insertion order in modern
 // engines, and AGENT_REGISTRY is declared in 3×3 grid order — so
@@ -30,25 +33,8 @@ const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 // the class set until the animation has finished painting.
 const PULSE_DURATION_MS = { success: 4000, warning: 4000, error: 3000 };
 
-export default function AgentGrid({ logs }) {
+export default function AgentGrid({ campusId }) {
   const [expandedName, setExpandedName] = useState(null);
-  const now = Date.now();
-
-  // Pre-slice the polled log array per agent so each card sees only
-  // its own rows. footage-scan + pipeline share agent_name='pipeline'
-  // and divide via actionFilter.
-  const perAgentRows = useMemo(() => {
-    const out = {};
-    for (const agent of REGISTRY_ORDER) {
-      const sourceMatched = (logs || []).filter(
-        (l) => l.agent_name === agent.sourceAgent,
-      );
-      out[agent.name] = agent.actionFilter
-        ? sourceMatched.filter((l) => agent.actionFilter(l.action || ''))
-        : sourceMatched;
-    }
-    return out;
-  }, [logs]);
 
   return (
     <section id="agent-grid" aria-label="Agents">
@@ -62,12 +48,11 @@ export default function AgentGrid({ logs }) {
             <AgentCard
               key={agent.name}
               agent={agent}
-              rows={perAgentRows[agent.name]}
+              campusId={campusId}
               isExpanded={isExpanded}
               onToggle={() =>
                 setExpandedName(isExpanded ? null : agent.name)
               }
-              now={now}
             />
           );
         })}
@@ -76,7 +61,20 @@ export default function AgentGrid({ logs }) {
   );
 }
 
-function AgentCard({ agent, rows, isExpanded, onToggle, now }) {
+function AgentCard({ agent, campusId, isExpanded, onToggle }) {
+  const now = Date.now();
+  const { data: rawRows } = useAgentLogsWindow(
+    campusId,
+    agent.sourceAgent,
+    agent.sparklineWindowMs,
+  );
+  const rows = useMemo(() => {
+    const list = rawRows || [];
+    return agent.actionFilter
+      ? list.filter((l) => agent.actionFilter(l.action || ''))
+      : list;
+  }, [rawRows, agent]);
+
   const dot = computeDot(agent, rows, now);
   const headline = agent.headlineMetric(rows, now);
   const footer = computeFooter(agent, rows, now);

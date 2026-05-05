@@ -165,13 +165,13 @@ export default function Ops() {
         {/* Agents + Upcoming Shoots (two-up on Studio Display, stacks on phone) */}
         {!isLaptop ? (
           <div className="lim-grid-2">
-            <AgentGrid logs={logs.data} loading={logs.loading} />
+            <AgentGrid campusId={campusId} />
             <UpcomingShoots />
           </div>
         ) : (
           <>
             {/* Laptop: 7-agent row on its own, then UpcomingShoots full-width */}
-            <AgentGrid logs={logs.data} loading={logs.loading} />
+            <AgentGrid campusId={campusId} />
             <UpcomingShoots />
           </>
         )}
