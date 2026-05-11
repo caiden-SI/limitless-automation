@@ -360,8 +360,10 @@ export const AGENT_REGISTRY = {
         ).length;
         return `${conceptsStaged} concepts staged this week · ${eventsServed} events served`;
       }
-      // Stub default.
-      return `stub mode · ${scans30d} scans, 0 events triggered`;
+      // Live, awaiting qualifying events. The agent scans every 15 min
+      // against a 48-hour calendar lookahead — if no filming events
+      // appear in the window, scans continue but no concepts are staged.
+      return `awaiting filming events · ${scans30d} scans this month`;
     },
     actionProse: {
       campus_run_started: 'campus scan started',

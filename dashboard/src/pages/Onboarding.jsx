@@ -151,13 +151,23 @@ export default function Onboarding() {
     return <div className="onboarding-loading">Loading...</div>;
   }
 
+  // Progress percentage (0–100). Section 6 displays as complete.
+  const progressPct = isComplete
+    ? 100
+    : Math.min(100, Math.round(((section - 1) / 6) * 100 + (1 / 6) * 100 * 0.5));
+
   // Complete screen
   if (isComplete && contextDocument) {
     return (
       <div className="onboarding">
         <div className="onboarding-header">
-          <h1>Student Onboarding</h1>
-          <span className="progress">Complete</span>
+          <div className="onboarding-header-row">
+            <span className="brand">Limitless</span>
+            <span className="section-label">Complete</span>
+          </div>
+          <div className="progress-bar">
+            <div className="progress-fill" style={{ width: '100%' }} />
+          </div>
         </div>
         <div className="complete-screen">
           <div className="complete-header">
@@ -184,8 +194,13 @@ export default function Onboarding() {
   return (
     <div className="onboarding">
       <div className="onboarding-header">
-        <h1>Student Onboarding</h1>
-        <span className="progress">Section {section} of 6</span>
+        <div className="onboarding-header-row">
+          <span className="brand">Limitless</span>
+          <span className="section-label">Section {section} of 6</span>
+        </div>
+        <div className="progress-bar">
+          <div className="progress-fill" style={{ width: `${progressPct}%` }} />
+        </div>
       </div>
 
       <div className="messages">
@@ -194,7 +209,13 @@ export default function Onboarding() {
             {msg.content}
           </div>
         ))}
-        {loading && <div className="typing">Thinking...</div>}
+        {loading && (
+          <div className="typing" aria-label="Assistant is typing">
+            <span className="typing-dot" />
+            <span className="typing-dot" />
+            <span className="typing-dot" />
+          </div>
+        )}
         <div ref={messagesEndRef} />
       </div>
 

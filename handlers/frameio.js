@@ -1,39 +1,64 @@
-// Frame.io webhook handler — receives comment.created and other asset events.
+// Frame.io v4 webhook handler. Migrated from v2 on 2026-05-08.
 //
 // Events are durably recorded in webhook_inbox before returning 200.
 // Processing happens asynchronously. Failures update the inbox row
 // instead of being silently dropped (same pattern as handlers/clickup.js).
 //
-// comment.created flow:
-//   1. Webhook arrives with asset.id on the payload
-//   2. Look up videos by frameio_asset_id (populated upstream by
-//      pipeline.syncFrameioLink on the `edited` status transition — see
-//      agents/pipeline.js:337. Opaque URLs leave the column null and the
-//      lookup gracefully no-ops; resolving those is the deferred Frame.io
-//      v2 presentation/share resolver backlog item.)
-//   3. Route to pipeline.handleReviewComment — sets ClickUp task to `waiting`
+// V4 changes from V2:
+//   - Signature: was `HMAC-SHA256(secret, body)` hex in X-Frameio-Signature.
+//     Now `v0=` prefix + HMAC-SHA256(secret, `v0:{timestamp}:{body}`).
+//     Also requires X-Frameio-Request-Timestamp with a 500-second
+//     drift check to prevent replay.
+//   - Payload: was body.asset.id at top level. Now body.resource.id
+//     with body.resource.type === 'file' (or 'comment', etc.).
+//   - team_id is no longer in payload (account.id, workspace.id,
+//     project.id are present instead).
 //
-// NOTE: Frame.io was acquired by Adobe. Decision 2026-04-02 commits to v2 API
-// and v2 webhook shape. When migrating to v4 (Adobe I/O Events), the signature
-// header and payload shape may change.
+// comment.created flow:
+//   1. v4 webhook arrives with body.resource.id (file UUID)
+//   2. Look up videos by frameio_asset_id (populated upstream by
+//      pipeline.syncFrameioLink on the `edited` status transition —
+//      see agents/pipeline.js)
+//   3. Route to pipeline.handleReviewComment — sets ClickUp task to `waiting`
 
 const crypto = require('crypto');
 const { supabase } = require('../lib/supabase');
 const { log } = require('../lib/logger');
 const pipeline = require('../agents/pipeline');
 
-/**
- * Verify Frame.io webhook signature.
- * Frame.io signs webhooks with HMAC-SHA256(secret, rawBody) sent in X-Frameio-Signature as hex.
- */
-function verifySignature(rawBody, signature) {
-  const secret = process.env.FRAMEIO_WEBHOOK_SECRET;
-  if (!secret || !signature || !rawBody) return false;
+// 500 seconds matches the Frame.io v4 sample code's drift tolerance.
+// (The narrative docs say 5 minutes, but the canonical Python sample
+// uses 500. Going with the code path's stricter / authoritative number.)
+const SIGNATURE_TIMESTAMP_DRIFT_SECONDS = 500;
 
-  const expected = crypto
+/**
+ * Verify a Frame.io v4 webhook signature.
+ *
+ * Algorithm:
+ *   message = "v0:" + timestamp + ":" + rawBody
+ *   expected = "v0=" + hex(HMAC-SHA256(secret, message))
+ *   compare with X-Frameio-Signature using timing-safe equal
+ *
+ * Also validates the timestamp is within SIGNATURE_TIMESTAMP_DRIFT_SECONDS
+ * of the current time (replay-attack guard).
+ */
+function verifySignature(rawBody, signature, timestamp) {
+  const secret = process.env.FRAMEIO_WEBHOOK_SECRET;
+  if (!secret || !signature || !timestamp || !rawBody) return false;
+
+  // Replay guard: timestamp must be within drift window of now.
+  const reqTime = Number(timestamp);
+  if (!Number.isFinite(reqTime)) return false;
+  const driftSeconds = Math.abs(Math.floor(Date.now() / 1000) - reqTime);
+  if (driftSeconds > SIGNATURE_TIMESTAMP_DRIFT_SECONDS) return false;
+
+  // Compute expected signature.
+  const message = `v0:${timestamp}:${rawBody}`;
+  const computedHex = crypto
     .createHmac('sha256', secret)
-    .update(rawBody)
+    .update(message)
     .digest('hex');
+  const expected = `v0=${computedHex}`;
 
   const expectedBuf = Buffer.from(expected, 'utf8');
   const signatureBuf = Buffer.from(signature, 'utf8');
@@ -43,10 +68,16 @@ function verifySignature(rawBody, signature) {
 }
 
 async function handler(req, res) {
-  // Verify webhook signature
   const signature = req.headers['x-frameio-signature'];
-  if (!verifySignature(req.rawBody, signature)) {
-    await log({ agent: 'server', action: 'frameio_webhook_rejected', status: 'warning', payload: { reason: 'invalid_signature' } });
+  const timestamp = req.headers['x-frameio-request-timestamp'];
+
+  if (!verifySignature(req.rawBody, signature, timestamp)) {
+    await log({
+      agent: 'server',
+      action: 'frameio_webhook_rejected',
+      status: 'warning',
+      payload: { reason: 'invalid_signature_or_timestamp' },
+    });
     return res.status(401).json({ error: 'Invalid signature' });
   }
 
@@ -67,7 +98,6 @@ async function handler(req, res) {
     if (insertErr) throw insertErr;
     inboxId = row.id;
   } catch (err) {
-    // If inbox insert fails, reject so Frame.io retries
     await log({
       agent: 'server',
       action: 'webhook_inbox_insert_failed',
@@ -110,17 +140,28 @@ async function handler(req, res) {
 }
 
 /**
- * Route a Frame.io event to the right pipeline action.
+ * Route a Frame.io v4 event to the right pipeline action.
  * Currently only comment.created is handled.
  */
 async function processFrameioEvent(body, inboxId) {
   const { type } = body || {};
-  const assetId = body?.asset?.id || null;
+  // v4 puts the resource ID at body.resource.id with body.resource.type
+  // identifying what kind of resource. For comment.created the resource
+  // is the comment itself; we want the file the comment was made on,
+  // which v4 does not surface directly in the webhook payload — see
+  // the warning in the v4 docs:
+  //   "We do not include any additional information beyond the
+  //    resource ID about the subscribed resource."
+  // So for comment.created we must call back to the API to fetch the
+  // comment and read its parent file_id. Wire that lookup in
+  // handleCommentCreated.
+  const resourceId = body?.resource?.id || null;
+  const resourceType = body?.resource?.type || null;
 
   await log({
     agent: 'pipeline',
     action: `frameio_webhook_received: ${type}`,
-    payload: { type, assetId, inboxId },
+    payload: { type, resourceId, resourceType, inboxId },
   });
 
   switch (type) {
@@ -140,21 +181,61 @@ async function processFrameioEvent(body, inboxId) {
 
 /**
  * comment.created → set the associated ClickUp task to `waiting`.
- * Matches the video by frameio_asset_id, which is populated by
- * pipeline.syncFrameioLink when the task transitions to `edited`.
- * If no match, log and skip — either the editor has not yet pasted
- * the Frame.io URL into ClickUp, or the URL was opaque and the asset
- * UUID could not be extracted (deferred Frame.io v2 resolver territory).
+ *
+ * v4 doesn't include the parent file_id directly in the webhook
+ * payload — only the comment's own resource ID. To find the matching
+ * video, we call back to /v4/comments/{id} to get its parent file ID,
+ * then look that file up in our videos table by frameio_asset_id.
+ *
+ * If no match: log and skip (either the editor has not yet pasted the
+ * Frame.io URL into ClickUp, or the URL was opaque and the asset UUID
+ * could not be extracted).
  */
 async function handleCommentCreated(body, inboxId) {
-  const assetId = body?.asset?.id || null;
+  const commentId = body?.resource?.id || null;
 
-  if (!assetId) {
+  if (!commentId) {
     await log({
       agent: 'server',
-      action: 'frameio_comment_no_asset_id',
+      action: 'frameio_comment_no_resource_id',
       status: 'warning',
       payload: { inboxId, payloadKeys: Object.keys(body || {}) },
+    });
+    return;
+  }
+
+  // Look up the comment to find its parent file ID.
+  const { getAccessToken } = require('../lib/frameio-oauth');
+  const token = await getAccessToken();
+  const commentRes = await fetch(`https://api.frame.io/v4/comments/${commentId}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+
+  if (!commentRes.ok) {
+    const errText = await commentRes.text().catch(() => '');
+    await log({
+      agent: 'pipeline',
+      action: 'frameio_comment_lookup_failed',
+      status: 'error',
+      errorMessage: `comment lookup ${commentRes.status}: ${errText.slice(0, 200)}`,
+      payload: { commentId, inboxId },
+    });
+    return;
+  }
+
+  const commentData = await commentRes.json();
+  const fileId =
+    commentData?.data?.file_id ||
+    commentData?.data?.parent?.id ||
+    commentData?.file_id ||
+    null;
+
+  if (!fileId) {
+    await log({
+      agent: 'pipeline',
+      action: 'frameio_comment_no_file_id',
+      status: 'warning',
+      payload: { commentId, inboxId, commentData: JSON.stringify(commentData).slice(0, 300) },
     });
     return;
   }
@@ -162,7 +243,7 @@ async function handleCommentCreated(body, inboxId) {
   const { data: video, error } = await supabase
     .from('videos')
     .select('id, clickup_task_id, campus_id')
-    .eq('frameio_asset_id', assetId)
+    .eq('frameio_asset_id', fileId)
     .maybeSingle();
 
   if (error) throw new Error(`Supabase query failed (videos): ${error.message}`);
@@ -172,7 +253,7 @@ async function handleCommentCreated(body, inboxId) {
       agent: 'pipeline',
       action: 'frameio_comment_no_matching_video',
       status: 'warning',
-      payload: { assetId, inboxId },
+      payload: { fileId, commentId, inboxId },
     });
     return;
   }
@@ -183,7 +264,7 @@ async function handleCommentCreated(body, inboxId) {
       agent: 'pipeline',
       action: 'frameio_comment_video_missing_task_id',
       status: 'warning',
-      payload: { videoId: video.id, assetId, inboxId },
+      payload: { videoId: video.id, fileId, commentId, inboxId },
     });
     return;
   }
@@ -192,3 +273,6 @@ async function handleCommentCreated(body, inboxId) {
 }
 
 module.exports = handler;
+// Exposed for tests
+module.exports.verifySignature = verifySignature;
+module.exports.processFrameioEvent = processFrameioEvent;
