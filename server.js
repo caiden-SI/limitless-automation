@@ -175,7 +175,7 @@ app.use((err, _req, res, _next) => {
  * Env-gated jobs (fireflies, profile-views) check their flags here so the
  * test sees the gate behavior — passing a stub scheduler with the env
  * unset must not register the gated job, and setting the env must register
- * it. See `scripts/test-profile-views-agent.js` test #7.
+ * it.
  */
 function registerScheduledJobs(scheduler) {
   // Research Agent — daily at 6 AM

@@ -6,3 +6,5 @@ credentials/
 .DS_Store
 .claude/
 dashboard/dist/
+.env.local-backup
+.env*.backup

@@ -1,508 +1,287 @@
-// Profile Views Agent — weekly Apify scrape of student + brand profiles.
+// Profile Views Agent — daily scrape of every tracked post URL.
 // Trigger: Cron job, Thursday 9 AM (`0 9 * * 4`). Registered in server.js
-// behind APIFY_API_TOKEN env-gate.
+// behind APIFY_API_TOKEN env-gate. (Cadence flips to daily once Scott's
+// Apify token replaces Caiden's free-tier token in `.env` — see
+// `iteration-3-fixes.md` Fix 2.)
 //
-// Spec: workflows/profile-views.md (source of truth — do not deviate
+// Spec: docs/profile-views-rebuild-spec.md (source of truth — do not deviate
 // without updating it first).
 //
-// One-line summary: for each student-or-brand row in the campus that has
-// a TikTok or Instagram handle, scrape up to 20 of their most recent
-// videos, match those URLs against `videos.post_url`, and write a
-// `performance` row per match. The first scrape per (video, platform)
-// plants an `apify_anchor` row carrying the lifetime cumulative; every
-// subsequent week writes an `apify` delta computed against the running
-// sum of prior Apify-lineage rows. Sheet rows from the tracker sync are
-// excluded from the agent's delta math by source.
+// One-line summary: pull any new post URLs Scott added to the Content
+// Performance Tracker into `videos.post_url_<platform>`, then scrape every
+// such URL via Apify per-platform actors, compute the week-over-week
+// delta against the most recent prior apify-lineage row, upsert one
+// performance row per (video × platform × week_of), and push the deltas
+// back into the matching weekly column on the sheet.
+//
+// The pre-rebuild architecture (channel-level scraping via
+// `scrapeProfileVideos`) had four failure modes — pinned-video distortion,
+// partial coverage, no delta math, no URL plumbing. All four are
+// addressed here. Scrape input is now URL-keyed via
+// `scrapeVideosByUrls`, prior-cumulative subtraction handles delta
+// math, and the sheet sync handles URL plumbing.
 
 const { supabase } = require('../lib/supabase');
 const { log } = require('../lib/logger');
 const selfHeal = require('../lib/self-heal');
-const { scrapeProfileVideos } = require('../tools/scraper');
+const {
+  scrapeVideosByUrls,
+  canonicalizePostUrl,
+} = require('../tools/scraper');
+const { pullNewUrlsFromSheet, pushDeltasToSheet } = require('../tools/sheet-sync');
 
 const AGENT_NAME = 'profile-views';
 
-// ── Helpers (exported for tests) ───────────────────────────────────────────
+// Platforms whose URLs the agent scrapes. Twitter is intentionally absent —
+// no working view-count actor (see scrapeVideosByUrls) and no
+// `videos.post_url_twitter` column. Twitter weekly counts stay manual in
+// the sheet until that gap closes.
+const SCRAPE_PLATFORMS = ['tiktok', 'instagram', 'youtube'];
+
+const PLATFORM_COLUMN = {
+  tiktok: 'post_url_tiktok',
+  instagram: 'post_url_instagram',
+  youtube: 'post_url_youtube',
+};
 
 /**
  * Most recent Friday on or before `now`, formatted YYYY-MM-DD UTC.
  *
- * The agent's cron runs Thursday 9 AM, so the produced `weekOf` is always
- * the Friday at the end of the previous full content week. The tracker
- * sync writes the same Friday-aligned format, so the two writers' rows
- * land on the same `(video_id, platform, week_of)` unique key.
+ * The sheet uses Friday as the start-of-week anchor (header `M/D-M/D`
+ * where the first M/D is a Friday). Both the agent and the sheet sync
+ * share this convention so a row's week_of cleanly maps to a column.
  */
 function mostRecentFriday(now = new Date()) {
   const d = new Date(now);
   d.setUTCHours(0, 0, 0, 0);
-  // 5 = Friday in JS getUTCDay() (0=Sun … 6=Sat)
   const day = d.getUTCDay();
   const diff = (day - 5 + 7) % 7;
   d.setUTCDate(d.getUTCDate() - diff);
   return d.toISOString().slice(0, 10);
 }
 
-/**
- * Same canonicalization rule as `scripts/sync-performance-tracker.canonicalizeUrl`.
- * Drop query/hash, lowercase host, strip trailing slash. A scraped URL
- * canonicalizes identically to a stored `videos.post_url`, which is what
- * the lookup Map indexes on.
- *
- * Hardened in Codex review #2: only `http:` and `https:` are accepted,
- * the host must be non-empty, and the prior catch-block fallback that
- * synthesized a key from unparseable input is gone. Both this function
- * and the sync's `canonicalizeUrl` must drift together — anything stored
- * by one and looked up by the other has to canonicalize identically.
- *
- * Note: `scripts/backfill-post-urls.canonicalizeUrl` and
- * `agents/pipeline.canonicalizePostUrl` are siblings of this rule. The
- * pipeline copy in particular is on the live write path and should be
- * audited / updated alongside this file the next time the rule changes.
- */
-function canonicalizePostUrl(url) {
-  if (!url) return null;
-  const raw = String(url).trim();
-  if (!raw) return null;
-  if (!/^https?:\/\//i.test(raw)) return null;
-  let u;
-  try {
-    u = new URL(raw);
-  } catch {
-    return null;
-  }
-  if (u.protocol !== 'http:' && u.protocol !== 'https:') return null;
-  if (!u.host) return null;
-  u.search = '';
-  u.hash = '';
-  return `${u.protocol}//${u.host.toLowerCase()}${u.pathname}`.replace(/\/+$/, '');
-}
-
-/**
- * Build the public profile URL for an Apify scrape from a stored handle.
- * Defensive `^@` strip — the brand-voice validator already does this when
- * reading the same fields, and seeded handles vary in whether they carry
- * the leading `@`.
- */
-function buildProfileUrl(platform, handle) {
-  const clean = String(handle || '').replace(/^@+/, '').trim();
-  if (!clean) throw new Error('empty handle');
-  if (platform === 'tiktok') return `https://www.tiktok.com/@${clean}`;
-  if (platform === 'instagram') return `https://www.instagram.com/${clean}/`;
-  throw new Error(`unsupported platform: ${platform}`);
-}
-
-// ── DB readers ─────────────────────────────────────────────────────────────
-
-async function loadStudentsWithHandles(campusId) {
-  // Loads everyone for the campus and filters in JS. PostgREST's `.or()`
-  // string syntax is fragile around `not.is.null` — keeping the filter in
-  // application code is more robust and the result set is tiny (≪100).
-  const { data, error } = await supabase
-    .from('students')
-    .select('id, name, handle_tiktok, handle_instagram')
-    .eq('campus_id', campusId);
-  if (error) throw new Error(`students query failed: ${error.message}`);
-  return (data || []).filter((s) => s.handle_tiktok || s.handle_instagram);
-}
-
-/**
- * Students with no handles AT ALL. The actionable case is when one of
- * these students also has at least one `videos.post_url` row — we have
- * post URLs but no way to refresh them. Run-level warning lets the
- * operator find and fill those handles.
- */
-async function loadHandlelessStudents(campusId) {
-  const { data, error } = await supabase
-    .from('students')
-    .select('id, name')
-    .eq('campus_id', campusId)
-    .is('handle_tiktok', null)
-    .is('handle_instagram', null);
-  if (error) throw new Error(`handleless students query failed: ${error.message}`);
-  return data || [];
-}
-
-async function loadVideoUrlIndex(campusId) {
-  const { data, error } = await supabase
-    .from('videos')
-    .select('id, post_url, student_id')
-    .eq('campus_id', campusId)
-    .not('post_url', 'is', null);
-  if (error) throw new Error(`videos query failed: ${error.message}`);
-
-  // First-loaded wins on canonical-URL collision so subsequent runs are
-  // deterministic regardless of supabase's row order. Collisions are
-  // logged as warnings — the unique partial index on
-  // `(campus_id, post_url) WHERE post_url IS NOT NULL` is still a carry
-  // item, so silent overwrites would mean cross-student misattribution
-  // until that constraint lands. See Codex review fix 2.
-  const m = new Map();
-  const collisions = [];
-  for (const v of data || []) {
-    const c = canonicalizePostUrl(v.post_url);
-    if (!c) continue;
-    if (m.has(c)) {
-      collisions.push({ url: c, kept_id: m.get(c).id, dropped_id: v.id });
-      continue;
-    }
-    m.set(c, v);
-  }
-
-  if (collisions.length > 0) {
-    await log({
-      campusId,
-      agent: AGENT_NAME,
-      action: 'duplicate_post_urls_detected',
-      status: 'warning',
-      payload: {
-        count: collisions.length,
-        sample: collisions.slice(0, 5),
-      },
-    });
-  }
-
-  return m;
-}
-
-/**
- * Sum of Apify-lineage view_count for (video_id, platform) over all rows
- * with `week_of < weekOf`. Used as the delta basis on steady-state weeks.
- *
- * Sheet rows are intentionally excluded — the agent's anchor row absorbs
- * pre-Apify cumulative (including any sheet history); re-counting sheet
- * rows here would double-count. See spec § "Sheet → Apify boundary".
- *
- * The strict `<` filter is what makes same-day re-runs idempotent: a row
- * already written today at `week_of == weekOf` is excluded from the
- * basis, so the next run produces the same delta.
- *
- * TODO (anchor-reset): when `current_cumulative < sumApifyPrior` persists
- * for ≥2 consecutive weeks, the agent should plant a new anchor row at
- * the new (lower) cumulative instead of writing zeros forever. Until
- * implemented, the negative-delta event surfaces as an `error`-status
- * agent_log so an operator can manually delete the stale anchor and
- * let cold-start re-plant. See spec §"Operator runbook: negative-delta
- * recovery". Tracked by Codex review fix 3.
- */
-async function getDeltaBasis(videoId, platform, weekOf) {
-  const { data, error } = await supabase
-    .from('performance')
-    .select('view_count')
-    .eq('video_id', videoId)
-    .eq('platform', platform)
-    .in('source', ['apify', 'apify_anchor'])
-    .lt('week_of', weekOf);
-  if (error) throw new Error(`delta basis query failed: ${error.message}`);
-  let sum = 0;
-  for (const r of data || []) sum += r.view_count || 0;
-  return { sumApifyPrior: sum, hasPriorApify: (data || []).length > 0 };
-}
-
-// ── Match + upsert assembly ────────────────────────────────────────────────
-
-/**
- * Filter scraped items to those matching `videos.post_url` in the index.
- * Items missing a usable URL or with a non-coercible `viewCount` are
- * dropped into `invalid` with a reason string and a sample of the bad
- * shape — the caller logs them per profile so a scraper-contract drift
- * (e.g. Apify ships `viewCount` as a string of garbage one day) is
- * obvious in `agent_logs` instead of looking like a low-activity week.
- *
- * Coercion: numeric strings (e.g. Apify returning `"1234"` instead of
- * `1234`) are accepted via `Number(rawViewCount)` after a typeof guard
- * that rejects null/undefined/empty-string explicitly, since `Number(null)`
- * is `0` (a valid view count we don't want to fabricate).
- *
- * @returns {{
- *   matches: Array<{videoId: string, currentCumulative: number}>,
- *   unmatched: string[],
- *   invalid: Array<{url: string|null, viewCount: any, reason: string}>
- * }}
- */
-function matchScrapedItems(items, videoIndex) {
-  const matches = [];
-  const unmatched = [];
-  const invalid = [];
-  for (const item of items || []) {
-    const url = item && item.url;
-    const rawViewCount = item && item.viewCount;
-
-    let viewCount = NaN;
-    if (typeof rawViewCount === 'number') {
-      viewCount = rawViewCount;
-    } else if (typeof rawViewCount === 'string' && rawViewCount.trim() !== '') {
-      viewCount = Number(rawViewCount);
-    }
-
-    if (!url || typeof url !== 'string' || url.trim() === '') {
-      invalid.push({ url: typeof url === 'string' ? url : null, viewCount: rawViewCount, reason: 'missing_url' });
-      continue;
-    }
-    if (!Number.isFinite(viewCount) || viewCount < 0) {
-      invalid.push({ url, viewCount: rawViewCount, reason: 'invalid_viewCount' });
-      continue;
-    }
-    const canon = canonicalizePostUrl(url);
-    const video = canon ? videoIndex.get(canon) : null;
-    if (!video) {
-      unmatched.push(url);
-      continue;
-    }
-    matches.push({ videoId: video.id, currentCumulative: Math.round(viewCount) });
-  }
-  return { matches, unmatched, invalid };
-}
-
-/**
- * Compute the upsert row for one (video, platform) match given a current
- * cumulative scrape and a target weekOf.
- *
- *   Cold-start  → write 'apify_anchor' carrying the lifetime cumulative.
- *   Steady-state → write 'apify' with `current_cumulative - sum_apify_prior`,
- *                  floored at 0.
- *
- * Exported so the test harness can drive each path with forced inputs.
- */
-async function buildUpsertRowForMatch({ campusId, videoId, platform, currentCumulative, weekOf }) {
-  const { sumApifyPrior, hasPriorApify } = await getDeltaBasis(videoId, platform, weekOf);
-  if (!hasPriorApify) {
-    return {
-      row: {
-        campus_id: campusId,
-        video_id: videoId,
-        platform,
-        view_count: Math.max(0, Math.round(currentCumulative)),
-        week_of: weekOf,
-        source: 'apify_anchor',
-      },
-      sumApifyPrior,
-      hasPriorApify,
-      flooredNegative: false,
-    };
-  }
-  const raw = Math.round(currentCumulative) - sumApifyPrior;
-  const flooredNegative = raw < 0;
-  return {
-    row: {
-      campus_id: campusId,
-      video_id: videoId,
-      platform,
-      view_count: Math.max(0, raw),
-      week_of: weekOf,
-      source: 'apify',
-    },
-    sumApifyPrior,
-    hasPriorApify,
-    flooredNegative,
-  };
-}
-
-// ── Run ────────────────────────────────────────────────────────────────────
-
 async function run(campusId) {
   const weekOf = mostRecentFriday();
   const counters = {
-    studentsScanned: 0,
-    profilesScraped: 0,
+    weekOf,
+    sheetPullCreated: 0,
+    sheetPullUpdated: 0,
+    sheetPullSkipped: 0,
+    sheetPullWarnings: 0,
+    videosWithUrls: 0,
+    urlsScraped: 0,
     scrapeErrors: 0,
-    scrapedVideos: 0,
-    invalidItems: 0,
-    matched: 0,
-    unmatched: [],
-    written: 0,
+    notFound: 0,
+    imagePosts: 0,
+    perfRowsWritten: 0,
     anchorsPlanted: 0,
     deltasWritten: 0,
-    // Array of {videoId, platform, currentCumulative, sumApifyPrior} so
-    // the operator-facing log can surface samples (Codex review fix 3).
-    negativeDeltaFloored: [],
+    sheetPushTabsUpdated: 0,
+    sheetPushRowsWritten: 0,
+    sheetPushColumnsAdded: 0,
+    sheetPushWarnings: 0,
   };
 
   try {
     await log({ campusId, agent: AGENT_NAME, action: 'profile_views_run_started', payload: { weekOf } });
 
-    const [students, videoIndex] = await Promise.all([
-      loadStudentsWithHandles(campusId),
-      loadVideoUrlIndex(campusId),
-    ]);
-    counters.studentsScanned = students.length;
+    // Step 1: Pull any new URLs from the Sheet into videos rows. Wrapped
+    // separately so a sheet outage logs a warning but doesn't block the
+    // scrape — the agent can still refresh whatever URLs are already
+    // tracked. Numbers feed into the run-complete payload either way.
+    try {
+      const sheetPull = await pullNewUrlsFromSheet({ campusId });
+      counters.sheetPullCreated = sheetPull.videosCreated;
+      counters.sheetPullUpdated = sheetPull.videosUpdated;
+      counters.sheetPullSkipped = sheetPull.skipped;
+      counters.sheetPullWarnings = sheetPull.warnings.length;
+      await log({
+        campusId,
+        agent: AGENT_NAME,
+        action: 'sheet_pull_complete',
+        payload: {
+          videosCreated: sheetPull.videosCreated,
+          videosUpdated: sheetPull.videosUpdated,
+          urlsScanned: sheetPull.urlsScanned,
+          skipped: sheetPull.skipped,
+          twitterSkipped: sheetPull.twitterSkipped,
+          warnings: sheetPull.warnings.slice(0, 10),
+        },
+      });
+    } catch (err) {
+      await log({
+        campusId,
+        agent: AGENT_NAME,
+        action: 'sheet_pull_failed',
+        status: 'warning',
+        errorMessage: err.message,
+      });
+    }
 
-    // Surface the actionable handleless-with-videos case so the operator
-    // can fill the missing handles. Cheap two-query check; bounded by the
-    // small number of campus students.
-    await warnHandlelessWithVideos(campusId);
+    // Step 2: Load every videos row that has at least one per-platform URL.
+    const { data: videos, error: vErr } = await supabase
+      .from('videos')
+      .select('id, student_id, post_url_tiktok, post_url_instagram, post_url_youtube')
+      .eq('campus_id', campusId)
+      .or('post_url_tiktok.not.is.null,post_url_instagram.not.is.null,post_url_youtube.not.is.null');
+    if (vErr) throw new Error(`videos query failed: ${vErr.message}`);
+    counters.videosWithUrls = (videos || []).length;
 
-    const matches = []; // { videoId, platform, currentCumulative }
-
-    for (const student of students) {
-      for (const platform of ['tiktok', 'instagram']) {
-        const handleField = platform === 'tiktok' ? 'handle_tiktok' : 'handle_instagram';
-        const handle = student[handleField];
-        if (!handle || !String(handle).trim()) continue;
-
-        let profileUrl;
-        try {
-          profileUrl = buildProfileUrl(platform, handle);
-        } catch (err) {
-          await log({
-            campusId,
-            agent: AGENT_NAME,
-            action: 'profile_views_handle_invalid',
-            status: 'warning',
-            payload: { studentId: student.id, platform, handle, reason: err.message },
-          });
-          continue;
-        }
-
-        let items;
-        try {
-          items = await scrapeProfileVideos(profileUrl, platform, 20);
-          if (!Array.isArray(items)) {
-            throw new Error(`scrapeProfileVideos returned non-array: ${typeof items}`);
-          }
-          counters.profilesScraped++;
-          await log({
-            campusId,
-            agent: AGENT_NAME,
-            action: `${platform}_scrape_complete`,
-            payload: { studentId: student.id, profileUrl, count: items.length },
-          });
-        } catch (err) {
-          counters.scrapeErrors++;
-          await log({
-            campusId,
-            agent: AGENT_NAME,
-            action: 'profile_views_scrape_error',
-            status: 'error',
-            errorMessage: err.message,
-            payload: { studentId: student.id, profileUrl, platform },
-          });
-          continue;
-        }
-
-        counters.scrapedVideos += items.length;
-
-        const { matches: m, unmatched: u, invalid: inv } = matchScrapedItems(items, videoIndex);
-        counters.matched += m.length;
-        counters.unmatched.push(...u);
-        if (inv.length > 0) {
-          counters.invalidItems += inv.length;
-          // Per-profile log: which student × platform produced the bad
-          // items, with a small sample of the bad shape so contract drift
-          // is debuggable from agent_logs alone. Codex review fix 4.
-          await log({
-            campusId,
-            agent: AGENT_NAME,
-            action: 'profile_views_invalid_items',
-            status: 'warning',
-            payload: {
-              studentId: student.id,
-              profileUrl,
-              platform,
-              count: inv.length,
-              sample: inv.slice(0, 3),
-            },
-          });
-        }
-        for (const mr of m) {
-          matches.push({ videoId: mr.videoId, platform, currentCumulative: mr.currentCumulative });
-        }
+    // Group by platform → list of {videoId, url}. A single videos row can
+    // contribute to multiple platforms if it carries URLs for several.
+    const byPlatform = { tiktok: [], instagram: [], youtube: [] };
+    for (const v of videos || []) {
+      for (const platform of SCRAPE_PLATFORMS) {
+        const url = v[PLATFORM_COLUMN[platform]];
+        if (url) byPlatform[platform].push({ videoId: v.id, url });
       }
     }
 
-    // One delta-basis query per (video_id, platform). The match list can
-    // have multiple entries for the same pair if the scraper returns the
-    // same URL twice; the dedup below handles the upsert side, but for
-    // efficiency we cache the basis per pair too.
-    const basisCache = new Map();
+    // Step 3: Scrape per platform, build the upsert list with delta math.
     const upserts = [];
-    for (const m of matches) {
-      const key = `${m.videoId}|${m.platform}`;
-      if (!basisCache.has(key)) {
-        basisCache.set(key, await getDeltaBasis(m.videoId, m.platform, weekOf));
-      }
-      const { sumApifyPrior, hasPriorApify } = basisCache.get(key);
+    for (const platform of SCRAPE_PLATFORMS) {
+      const list = byPlatform[platform];
+      if (list.length === 0) continue;
 
-      let row;
-      if (!hasPriorApify) {
-        row = {
-          campus_id: campusId,
-          video_id: m.videoId,
-          platform: m.platform,
-          view_count: Math.max(0, m.currentCumulative),
-          week_of: weekOf,
-          source: 'apify_anchor',
-        };
-        counters.anchorsPlanted++;
-      } else {
-        const raw = m.currentCumulative - sumApifyPrior;
-        if (raw < 0) {
-          counters.negativeDeltaFloored.push({
-            videoId: m.videoId,
-            platform: m.platform,
-            currentCumulative: m.currentCumulative,
-            sumApifyPrior,
+      let scraped;
+      try {
+        scraped = await scrapeVideosByUrls(list.map((x) => x.url), platform);
+      } catch (err) {
+        counters.scrapeErrors++;
+        await log({
+          campusId,
+          agent: AGENT_NAME,
+          action: 'profile_views_scrape_error',
+          status: 'error',
+          errorMessage: err.message,
+          payload: { platform, urlCount: list.length },
+        });
+        continue;
+      }
+
+      const byCanonical = new Map();
+      for (const s of scraped) {
+        if (s.canonicalUrl) byCanonical.set(s.canonicalUrl, s);
+      }
+
+      for (const { videoId, url } of list) {
+        const canonical = canonicalizePostUrl(url, platform);
+        const result = canonical ? byCanonical.get(canonical) : null;
+
+        if (!result || result.error === 'not_found') {
+          counters.notFound++;
+          await log({
+            campusId,
+            agent: AGENT_NAME,
+            action: 'scrape_url_not_returned',
+            status: 'warning',
+            payload: { videoId, platform, url },
           });
+          continue;
         }
-        row = {
+        if (result.error === 'image_post_no_view_count') {
+          counters.imagePosts++;
+          await log({
+            campusId,
+            agent: AGENT_NAME,
+            action: 'image_post_no_view_count',
+            payload: { videoId, platform, url },
+          });
+          continue;
+        }
+        if (result.viewCount == null) continue;
+
+        // Basis: the most recent prior cumulative-semantic row's view_count.
+        // Three sources qualify:
+        //   apify         — steady-state weekly scrape (cumulative)
+        //   apify_anchor  — first scrape of a (video, platform) (cumulative)
+        //   sheet_synth   — anchor synthesized from summed sheet history
+        //                   (docs/recovery-anchor-backfill-spec.md), used to
+        //                   close the 74-URL gap left by the May 8 broken run
+        // Plain `'sheet'` rows from sync-performance-tracker are excluded —
+        // their view_count carries the OLD weekly semantic and would
+        // inflate the delta. See migrations/2026-05-04-performance-source.sql
+        // and docs/profile-views-rebuild-spec.md §1.
+        //
+        // ORDER BY week_of DESC LIMIT 1 means the newest qualifying row
+        // wins. A video with both a sheet_synth at 2026-05-01 AND a real
+        // apify scrape at a later week_of correctly prefers the apify row.
+        const { data: prior, error: pErr } = await supabase
+          .from('performance')
+          .select('view_count')
+          .eq('video_id', videoId)
+          .eq('platform', platform)
+          .in('source', ['apify', 'apify_anchor', 'sheet_synth'])
+          .lt('week_of', weekOf)
+          .order('week_of', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        if (pErr) throw new Error(`prior performance query failed: ${pErr.message}`);
+
+        const isAnchor = !prior;
+        const delta = isAnchor ? 0 : Math.max(0, result.viewCount - (prior.view_count || 0));
+        upserts.push({
           campus_id: campusId,
-          video_id: m.videoId,
-          platform: m.platform,
-          view_count: Math.max(0, raw),
+          video_id: videoId,
+          platform,
+          view_count: result.viewCount,
+          weekly_delta: delta,
           week_of: weekOf,
-          source: 'apify',
-        };
-        counters.deltasWritten++;
+          source: isAnchor ? 'apify_anchor' : 'apify',
+        });
+        counters.urlsScraped++;
+        if (isAnchor) counters.anchorsPlanted++;
+        else counters.deltasWritten++;
       }
-      upserts.push(row);
     }
 
-    // Dedup before chunking — defends against the scraper returning the
-    // same URL twice in one run, which would otherwise trip Postgres's
-    // "ON CONFLICT DO UPDATE command cannot affect row a second time".
-    // Last-write-wins; equal duplicates collapse to one.
-    const deduped = new Map();
+    // Step 4: Upsert the performance rows. Dedup defensively on the
+    // unique key in case the scraper returned duplicates (shouldn't, but
+    // a postgres "ON CONFLICT DO UPDATE command cannot affect row a
+    // second time" error from one duplicate would lose the whole batch).
+    const dedup = new Map();
     for (const u of upserts) {
-      deduped.set(`${u.video_id}|${u.platform}|${u.week_of}`, u);
+      dedup.set(`${u.video_id}|${u.platform}|${u.week_of}`, u);
     }
-    const finalUpserts = [...deduped.values()];
+    const finalUpserts = [...dedup.values()];
 
     const CHUNK = 500;
     for (let i = 0; i < finalUpserts.length; i += CHUNK) {
       const chunk = finalUpserts.slice(i, i + CHUNK);
-      const { error } = await supabase
+      const { error: uErr } = await supabase
         .from('performance')
         .upsert(chunk, { onConflict: 'video_id,platform,week_of' });
-      if (error) throw new Error(`performance upsert failed: ${error.message}`);
-      counters.written += chunk.length;
+      if (uErr) throw new Error(`performance upsert failed: ${uErr.message}`);
+      counters.perfRowsWritten += chunk.length;
     }
 
-    if (counters.unmatched.length > 0) {
+    // Step 5: Push deltas back to the sheet. Same try/catch pattern as
+    // step 1 — a sheet outage logs and continues; the scrape data is
+    // already safely in performance.
+    try {
+      const sheetPush = await pushDeltasToSheet({ campusId, weekOf });
+      counters.sheetPushTabsUpdated = sheetPush.tabsUpdated;
+      counters.sheetPushRowsWritten = sheetPush.rowsWritten;
+      counters.sheetPushColumnsAdded = sheetPush.columnsAdded;
+      counters.sheetPushWarnings = sheetPush.warnings.length;
       await log({
         campusId,
         agent: AGENT_NAME,
-        action: 'profile_views_unmatched',
-        status: 'warning',
-        payload: { count: counters.unmatched.length, sample: counters.unmatched.slice(0, 10) },
-      });
-    }
-
-    if (counters.negativeDeltaFloored.length > 0) {
-      // Status `error` (not `warning`): a negative delta means the stored
-      // basis is now permanently inflated relative to reality. Every
-      // subsequent week will produce a 0 delta until the cumulative
-      // climbs back above the stale sum — which may never happen if the
-      // missing views came from a deleted post. Treat as state
-      // corruption that requires operator action. Recovery procedure:
-      // workflows/profile-views.md §"Operator runbook: negative-delta
-      // recovery". Codex review fix 3.
-      await log({
-        campusId,
-        agent: AGENT_NAME,
-        action: 'profile_views_negative_delta_floored',
-        status: 'error',
+        action: 'sheet_push_complete',
         payload: {
-          count: counters.negativeDeltaFloored.length,
-          samples: counters.negativeDeltaFloored.slice(0, 5),
+          tabsUpdated: sheetPush.tabsUpdated,
+          rowsWritten: sheetPush.rowsWritten,
+          columnsAdded: sheetPush.columnsAdded,
+          warnings: sheetPush.warnings.slice(0, 10),
         },
+      });
+    } catch (err) {
+      await log({
+        campusId,
+        agent: AGENT_NAME,
+        action: 'sheet_push_failed',
+        status: 'warning',
+        errorMessage: err.message,
       });
     }
 
@@ -510,20 +289,7 @@ async function run(campusId) {
       campusId,
       agent: AGENT_NAME,
       action: 'profile_views_run_complete',
-      payload: {
-        weekOf,
-        studentsScanned: counters.studentsScanned,
-        profilesScraped: counters.profilesScraped,
-        scrapeErrors: counters.scrapeErrors,
-        scrapedVideos: counters.scrapedVideos,
-        invalidItems: counters.invalidItems,
-        matched: counters.matched,
-        unmatched: counters.unmatched.length,
-        written: counters.written,
-        anchorsPlanted: counters.anchorsPlanted,
-        deltasWritten: counters.deltasWritten,
-        negativeDeltaFloored: counters.negativeDeltaFloored.length,
-      },
+      payload: counters,
     });
 
     return counters;
@@ -538,52 +304,6 @@ async function run(campusId) {
       retryFn: () => run(campusId),
     });
     return null;
-  }
-}
-
-/**
- * Per-run check: are there any students with NO handles set who already
- * have `videos.post_url` rows? That's the actionable case — we have URLs
- * but no path to refresh their view counts. Two queries, batched by
- * student_id.
- */
-async function warnHandlelessWithVideos(campusId) {
-  const handleless = await loadHandlelessStudents(campusId);
-  if (handleless.length === 0) return;
-
-  const ids = handleless.map((s) => s.id);
-  const { data: videos, error } = await supabase
-    .from('videos')
-    .select('student_id')
-    .eq('campus_id', campusId)
-    .in('student_id', ids)
-    .not('post_url', 'is', null);
-  if (error) {
-    await log({
-      campusId,
-      agent: AGENT_NAME,
-      action: 'handleless_check_failed',
-      status: 'warning',
-      errorMessage: error.message,
-    });
-    return;
-  }
-
-  const counts = new Map();
-  for (const v of videos || []) {
-    counts.set(v.student_id, (counts.get(v.student_id) || 0) + 1);
-  }
-  for (const s of handleless) {
-    const c = counts.get(s.id) || 0;
-    if (c > 0) {
-      await log({
-        campusId,
-        agent: AGENT_NAME,
-        action: 'profile_views_handleless_with_videos',
-        status: 'warning',
-        payload: { studentId: s.id, name: s.name, postUrlCount: c },
-      });
-    }
   }
 }
 
@@ -608,14 +328,5 @@ async function runAll() {
 module.exports = {
   run,
   runAll,
-  // helpers exported for tests + parity with sibling agents
   mostRecentFriday,
-  canonicalizePostUrl,
-  buildProfileUrl,
-  matchScrapedItems,
-  buildUpsertRowForMatch,
-  loadStudentsWithHandles,
-  loadHandlelessStudents,
-  loadVideoUrlIndex,
-  getDeltaBasis,
 };
