@@ -4,15 +4,15 @@ SOP for building and maintaining the Profile Views Agent. Source of truth for an
 
 ## Objective
 
-Replace Scott's manual weekly sheet updates with an automated Thursday scrape of every Austin student's primary TikTok and Instagram profiles. For each scraped video, match the URL back to a `videos` row by `post_url` and write one `performance` row per (video, platform) keyed on a Friday-aligned `week_of`. Brand accounts (Alpha High) are scraped alongside human students using the same per-`students.handle_*` lookup.
+Replace Scott's manual weekly sheet updates with an automated daily scrape of every Austin student's primary TikTok and Instagram profiles. For each scraped video, match the URL back to a `videos` row by `post_url` and write one `performance` row per (video, platform) keyed on a Friday-aligned `week_of`. Brand accounts (Alpha High) are scraped alongside human students using the same per-`students.handle_*` lookup.
 
 The agent is the live counterpart to `scripts/sync-performance-tracker.js`: the sync ingests Scott's hand-maintained Google Sheet, this agent ingests Apify scrapes. Both write to the same `performance` table with the same `(video_id, platform, week_of)` unique key, so the Performance Agent's Monday 7 AM analysis sees one consistent dataset.
 
 ## Trigger
 
-Cron job, weekly, Thursday at 9 AM. Registered in `server.js` via `lib/scheduler.js`. Schedule string: `0 9 * * 4`.
+Cron job, daily at 9 AM. Registered in `server.js` via `lib/scheduler.js`. Schedule string: `0 9 * * *`. (Cadence flipped from weekly Thursday to daily on 2026-05-11 after Scott confirmed the paid Apify plan covers the increased run count — see iteration-3-fixes.md Fix 2.)
 
-Why Thursday morning: it puts the snapshot one day before the Friday that anchors `week_of`, captures the bulk of a week's view accumulation, and lands in time for Scott's Friday review. The Performance Agent runs Monday 7 AM, so this scrape is in well before the next analysis window.
+Why daily 9 AM: each run lands before Scott's morning review, captures the previous day's view accumulation, and gives mid-week visibility into trending posts. The Performance Agent still runs Monday 7 AM and reads from the same `performance` table, so its weekly analysis sees all daily writes consolidated by `(video_id, platform, week_of)`.
 
 ## Inputs
 
@@ -58,13 +58,13 @@ unique (video_id, platform, week_of)              -- from 2026-05-04-videos-post
 index  (video_id, platform, source)               -- from 2026-05-04-performance-source.sql
 ```
 
-Why an explicit anchor: the sheet writes weekly deltas without a cumulative baseline. For any video with sheet history, the agent cannot derive "lifetime cumulative as of this Thursday" from the sheet rows alone — it only knows the deltas the sheet captured, which started mid-life of the video. The first Apify scrape captures true cumulative; recording it as an anchor row makes every subsequent week's delta (`current_cumulative - sum(apify-lineage prior rows)`) mathematically exact.
+Why an explicit anchor: the sheet writes weekly deltas without a cumulative baseline. For any video with sheet history, the agent cannot derive "lifetime cumulative as of this run" from the sheet rows alone — it only knows the deltas the sheet captured, which started mid-life of the video. The first Apify scrape captures true cumulative; recording it as an anchor row makes every subsequent week's delta (`current_cumulative - sum(apify-lineage prior rows)`) mathematically exact.
 
 ## Process flow
 
 For each active campus:
 
-1. **Cron fires Thursday 9 AM.** Compute `weekOf` = ISO date of the most recent Friday on or before today (e.g., Thursday 2026-05-07 → `2026-05-01`). Helper: `mostRecentFriday(now)`. Same date format as `sync-performance-tracker.js` writes, same Friday alignment as Scott's sheet headers.
+1. **Cron fires daily 9 AM.** Compute `weekOf` = ISO date of the most recent Friday on or before today (e.g., Monday 2026-05-11 → `2026-05-08`). Helper: `mostRecentFriday(now)`. Same date format as `sync-performance-tracker.js` writes, same Friday alignment as Scott's sheet headers. Multiple daily runs within a week all upsert against the same `(video_id, platform, week_of)` row, refreshing `view_count` and `weekly_delta` each day.
 2. **Load students with handles.** Query `students` for the campus where `handle_tiktok IS NOT NULL OR handle_instagram IS NOT NULL`. Brand and human students are loaded the same way.
 3. **Load video URL index.** Query `videos` for the campus, filtered to `post_url IS NOT NULL`. Build a `Map<canonicalUrl, video>` keyed by the canonicalized URL. Use the same canonicalization rule as `agents/pipeline.js canonicalizePostUrl` (drop query/hash, lowercase host, strip trailing slash) so a scraped URL hashes identically to a stored `post_url`.
 4. **For each student, for each platform** (`tiktok` if `handle_tiktok` set, `instagram` if `handle_instagram` set):
@@ -106,7 +106,7 @@ For each active campus:
 
 Without an explicit anchor, the first Apify scrape against a video that already has sheet history would compute `current_cumulative_lifetime - sum(sheet_weekly_deltas)`. The result is "all lifetime views minus the sliver the sheet captured" — i.e. it absorbs the entire pre-sheet history into one week's delta. With ~184 videos already carrying sheet rows at the time the cron first fires, this would produce 184 phantom viral weeks visible to the Monday Performance Agent run.
 
-The anchor row sidesteps the math problem (its `view_count` IS the absorbed lifetime, not a delta) and the Performance Agent prerequisite filter sidesteps the analytics problem (the anchor never enters pattern recognition). After the first Thursday, every subsequent week is a clean Apify-lineage delta computed only against `'apify'` and `'apify_anchor'` rows.
+The anchor row sidesteps the math problem (its `view_count` IS the absorbed lifetime, not a delta) and the Performance Agent prerequisite filter sidesteps the analytics problem (the anchor never enters pattern recognition). After the first run, every subsequent run is a clean Apify-lineage delta computed only against `'apify'` and `'apify_anchor'` rows.
 
 ### Performance Agent prerequisite
 
@@ -152,10 +152,10 @@ Per cron fire:
 ## Edge cases
 
 - **No handles for a student.** Skip the student. No log unless `handle_tiktok` and `handle_instagram` are both null AND the student has any `videos.post_url` rows — that's the actionable case (we have URLs but can't refresh them) and warrants a `warning` log per run.
-- **Apify rate limit / outage.** `scrapeProfileVideos` throws. Log `profile_views_scrape_error` with the profile URL and platform, continue to next student × platform. The run is not aborted; partial coverage is better than no coverage. The next Thursday will retry.
+- **Apify rate limit / outage.** `scrapeProfileVideos` throws. Log `profile_views_scrape_error` with the profile URL and platform, continue to next student × platform. The run is not aborted; partial coverage is better than no coverage. The next daily run will retry.
 - **Scraped URL doesn't match any `videos.post_url`.** This is the most common case — the profile has older posts that predate the backfill, or new posts that haven't flipped to "posted by client" yet. Record in the per-run unmatched list, do not log per-video. The `Pipeline Agent recordPostUrl` (Session 22) is the canonical path for adding new URLs; profile-views does not insert `videos` rows.
 - **`current_cumulative_views < sum_apify_prior`.** Floor at 0. Logs `profile_views_negative_delta_floored` at `warning` once per run, with the count of affected videos. Implies a deleted post or platform metric reset. Only applies on the steady-state path; cold-start writes the cumulative directly so the inequality cannot trigger.
-- **Cron fires on a Thursday that is also the day Scott updated the sheet.** Sheet rows carry `source = 'sheet'`; Apify rows carry `source = 'apify'` or `'apify_anchor'`. They share the same `(video_id, platform, week_of)` unique key, so **last write wins by source**: a same-week Apify scrape after the sheet sync overwrites the sheet row at that week. This is acceptable during cutover (sheet sync is being retired anyway). Once the sheet sync is decommissioned, this collision goes away.
+- **Cron fires on a day that Scott also updated the sheet.** Sheet rows carry `source = 'sheet'`; Apify rows carry `source = 'apify'` or `'apify_anchor'`. They share the same `(video_id, platform, week_of)` unique key, so **last write wins by source**: a same-week Apify scrape after the sheet sync overwrites the sheet row at that week. This is acceptable during cutover (sheet sync is being retired anyway). Once the sheet sync is decommissioned, this collision goes away.
 - **Sheet history coexisting with the new anchor.** When a video has prior sheet rows AND the agent plants an anchor today, both stay in the table. The Performance Agent's `source IN ('sheet', 'apify')` filter (anchor excluded) yields a clean weekly-delta view across the boundary: pre-anchor sheet deltas + post-anchor Apify deltas, none double-counted, no spike. The anchor's `view_count` is invisible to the Performance Agent and is only consulted by this agent's own `sum_apify_prior` query.
 - **Brand account vs human student.** The agent does not branch on `is_brand_account`. The discriminator only matters to dashboard rollups. The pipeline produces `videos` rows for brand-account content the same way it does for human content (post URL written on `posted by client`), and those rows match against the scraped URLs identically.
 - **Multiple handles per platform per student.** Out of scope for v1 (per the build decision: "primary handle only for now"). If a student adds a second TikTok account, future schema work adds `students.handles_tiktok jsonb` (or sibling table) — until then, the agent reads the singular field and ignores anything else.
@@ -188,7 +188,7 @@ For each affected `(video_id, platform)` from the log payload:
    ```
 
    Sheet rows (`source='sheet'`) stay — they remain valid pre-Apify history and continue to feed the Performance Agent's last-4-weeks window.
-3. The next Thursday cron re-anchors at the current cumulative. The cold-start path writes a fresh `apify_anchor` and steady-state resumes from there. Until then, the dropped Apify-lineage history is rebuildable from future scrapes; this manual reset just unblocks delta math going forward.
+3. The next daily cron re-anchors at the current cumulative. The cold-start path writes a fresh `apify_anchor` and steady-state resumes from there. Until then, the dropped Apify-lineage history is rebuildable from future scrapes; this manual reset just unblocks delta math going forward.
 
 The longer-term fix is anchor-reset-on-sustained-negative — when the condition persists for ≥2 weeks, the agent should auto-plant a new anchor at the new cumulative. Tracked as a TODO in `agents/profile-views.js` near `getDeltaBasis`. Until then, this manual procedure is the documented path.
 
@@ -218,7 +218,7 @@ New file `scripts/test-profile-views-agent.js`. Must:
 4. **`viewCount` field present on `scrapeProfileVideos` return.** Mock or call the scraper, assert each returned item has a numeric `viewCount`. Catches the Session 24 regression class — the agent silently writing zeros if the scraper's return shape ever loses the field.
 5. **Unmatched URL aggregation.** Run with a synthetic scrape that returns one matchable URL and one unmatchable URL, assert exactly one matched write and exactly one entry in the run summary's `unmatched` array.
 6. **Negative delta floor.** With the anchor row in place at `view_count=5000`, force `currentCumulative=4000`, assert written `view_count == 0` and a single `warning` log line with the floored count.
-7. **Cron registration smoke test.** Refactor `server.js` to expose its registration list as a function the test can call (e.g. `function registerScheduledJobs(scheduler) {...}` invoked from `app.listen`'s callback). Test calls it with a stub scheduler, asserts `'profile-views-agent'` is registered with the `0 9 * * 4` schedule when `APIFY_API_TOKEN` is set.
+7. **Cron registration smoke test.** Refactor `server.js` to expose its registration list as a function the test can call (e.g. `function registerScheduledJobs(scheduler) {...}` invoked from `app.listen`'s callback). Test calls it with a stub scheduler, asserts `'profile-views-agent'` is registered with the `0 9 * * *` schedule when `APIFY_API_TOKEN` is set.
 8. **Teardown.** Delete any test rows the harness inserted; do not delete real `performance` data created by Scott or by this agent in earlier runs. Identify test rows via a sentinel like the test campus_id or a `__perf_views_test_` title prefix on the seed video.
 
 Test must be runnable standalone via `node scripts/test-profile-views-agent.js`. Must skip gracefully (with a clear `SKIP` log line) if `APIFY_API_TOKEN` is unset.
@@ -242,14 +242,14 @@ Before the agent can run in production:
 - **Backfilling historical weekly buckets.** The agent only writes the current week's `weekOf`. Pre-pipeline performance history lives in Scott's sheet and is owned by `scripts/sync-performance-tracker.js`.
 - **Cross-account migration / handle changes.** When a student changes their TikTok handle, the agent simply scrapes the new URL and writes new rows. Old `videos.post_url` values continue to point at the old handle's URLs, which is correct — they are the same posts.
 - **Dashboard rollups for brand vs human accounts.** The `is_brand_account` flag is informational here; the dashboard owns the rollup logic.
-- **Performance Agent integration.** Already exists as a Monday 7 AM cron that reads `performance`. Profile-views writes into the same table on Thursday, three days before the next analysis run, by design.
+- **Performance Agent integration.** Already exists as a Monday 7 AM cron that reads `performance`. Profile-views writes into the same table daily; the Monday analysis sees up-to-six daily writes consolidated by the `(video_id, platform, week_of)` unique key.
 
 ## Acceptance criteria
 
 The agent is complete when:
 
 - Integration test passes end-to-end against real Apify, real Supabase.
-- One full Thursday cron run completes for the Austin campus and produces ≥ 1 `performance` row for at least one (video_id, platform) pair, and the run summary log shows non-zero `matched` and a defined `weekOf`.
+- One full daily cron run completes for the Austin campus and produces ≥ 1 `performance` row for at least one (video_id, platform) pair, and the run summary log shows non-zero `matched` and a defined `weekOf`.
 - The cron is registered in `server.js` behind an `APIFY_API_TOKEN` env-gate, and a clean boot log shows it (or its DISABLED variant) on startup.
 - `scripts/migrations/` carries no new migration (the existing schema is sufficient — confirm in commit message).
 - `workflows/profile-views.md` matches the implementation. If behavior intentionally diverges, update this spec first.

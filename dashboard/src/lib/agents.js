@@ -473,15 +473,15 @@ export const AGENT_REGISTRY = {
   'profile-views': {
     name: 'profile-views',
     sourceAgent: 'profile-views',
-    cadenceLabel: 'thu · 9 am',
+    cadenceLabel: 'daily · 9 am',
     cadenceType: 'cron',
-    cronExpression: '0 9 * * 4',
+    cronExpression: '0 9 * * *',
     sparklineWindowMs: 14 * DAY,
     sparklineBars: 14,
-    greenWithinMs: 10 * DAY,
-    redAfterMs: 14 * DAY,
+    greenWithinMs: 2 * DAY,
+    redAfterMs: 4 * DAY,
     description:
-      'Weekly Apify scrape of student + brand profiles. Writes anchor or delta rows to performance per (video, platform, week).',
+      'Daily Apify scrape of every tracked post URL. Writes anchor or delta rows to performance per (video, platform, week).',
     headlineMetric: (rows) => {
       if (rows.length === 0) return 'awaiting first run';
 
@@ -597,13 +597,10 @@ export function prevCronFire(cron, now = new Date()) {
       if (target > now) target.setDate(target.getDate() - 7);
       return target;
     }
-    case '0 9 * * 4': {
+    case '0 9 * * *': {
       const target = new Date(now);
       target.setHours(9, 0, 0, 0);
-      const dow = target.getDay(); // 0=Sun..6=Sat; Thursday=4
-      const daysSinceThu = (dow - 4 + 7) % 7;
-      target.setDate(target.getDate() - daysSinceThu);
-      if (target > now) target.setDate(target.getDate() - 7);
+      if (target > now) target.setDate(target.getDate() - 1);
       return target;
     }
     case '0 21 * * *': {
@@ -644,13 +641,10 @@ export function nextCronFire(cron, now = new Date()) {
       if (target <= now) target.setDate(target.getDate() + 7);
       return target;
     }
-    case '0 9 * * 4': {
+    case '0 9 * * *': {
       const target = new Date(now);
       target.setHours(9, 0, 0, 0);
-      const dow = target.getDay();
-      const daysUntilThu = (4 - dow + 7) % 7;
-      target.setDate(target.getDate() + daysUntilThu);
-      if (target <= now) target.setDate(target.getDate() + 7);
+      if (target <= now) target.setDate(target.getDate() + 1);
       return target;
     }
     case '0 21 * * *': {

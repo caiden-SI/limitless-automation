@@ -197,13 +197,13 @@ function registerScheduledJobs(scheduler) {
     console.log("[server] fireflies-agent cron NOT registered — set FIREFLIES_CRON_ENABLED=true after Scott disables fireflies_sync.py (workflows/fireflies-integration.md)");
   }
 
-  // Profile Views Agent — Thursday 9 AM. Env-gated on APIFY_API_TOKEN —
+  // Profile Views Agent — daily 9 AM. Env-gated on APIFY_API_TOKEN —
   // without the token the scraper would throw on first call, so we'd
   // rather not register the cron at all. See workflows/profile-views.md.
   if (process.env.APIFY_API_TOKEN) {
-    scheduler.register('profile-views-agent', '0 9 * * 4', profileViews.runAll);
+    scheduler.register('profile-views-agent', '0 9 * * *', profileViews.runAll);
   } else {
-    console.log('[server] profile-views-agent cron NOT registered — set APIFY_API_TOKEN to enable Thursday 9AM Apify scrapes (workflows/profile-views.md)');
+    console.log('[server] profile-views-agent cron NOT registered — set APIFY_API_TOKEN to enable daily 9AM Apify scrapes (workflows/profile-views.md)');
   }
 }
 

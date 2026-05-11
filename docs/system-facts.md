@@ -74,9 +74,10 @@ writes Supabase transcripts, ClickUp tasks (action items extracted via
 Anthropic).
 
 **Profile-views**
-Cron · weekly Thursday 9 AM · reads TikTok and Instagram profile pages
-(via Apify) · writes Supabase student_profile_metrics. Produces the
-view-count history that Performance analyzes.
+Cron · daily 9 AM · reads every tracked post URL via Apify (per-URL
+scrape, not channel scrape) · writes Supabase performance · pushes
+the week's deltas back to the Content Performance Tracker sheet.
+Produces the view-count history that Performance analyzes.
 
 ---
 
@@ -146,11 +147,11 @@ conversation via Anthropic → produces brand context document → stored
 in Supabase students.brand_context → used by Scripting.
 
 **7. Posted → view tracking → performance signals**
-Video moved to "posted by client" in ClickUp with public URL pasted →
-Profile-views (Thursday 9 AM) scrapes view counts via Apify → stored
-in Supabase student_profile_metrics → Performance (Monday 7 AM)
-analyzes via Anthropic → writes performance_signals → surfaces on
-dashboard SIGNALS panel.
+Video moved to "posted by client" in ClickUp (or URL pasted into the
+Content Performance Tracker sheet) → Profile-views (daily 9 AM)
+scrapes view counts via Apify → stored in Supabase performance →
+Performance (Monday 7 AM) analyzes via Anthropic → writes
+performance_signals → surfaces on dashboard SIGNALS panel.
 
 **8. Meeting → action items**
 Fireflies records meeting → Fireflies agent (nightly 9 PM) pulls
@@ -175,8 +176,8 @@ here because they affect how the diagram should be read.
 - **Manual scripting trigger** — Scripting fires on calendar events
   only. A "generate now" trigger from the dashboard is on the
   roadmap.
-- **Profile-views cadence** — currently Thursday 9 AM. Scott has
-  requested Friday morning to align with weekly review timing.
+- **Profile-views cadence** — daily 9 AM (flipped from weekly
+  Thursday on 2026-05-11; iteration-3 Fix 2 closed).
 
 ---
 

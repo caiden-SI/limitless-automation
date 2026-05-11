@@ -110,8 +110,11 @@ iteration-3 backlog.
 
 ### 7. Could we move the Apify Profile-views to Friday 9 AM instead of Thursday?
 
-Yes. Straightforward cron change. Already on the iteration-3 list.
-Caiden can ship this in five minutes via SSH whenever Scott confirms.
+**Resolved 2026-05-11.** Scott approved daily cadence instead
+("Yes this is completely fine, lets have it run once per day"),
+which is a superset of any single-day-of-week cadence. Cron flipped
+from `0 9 * * 4` to `0 9 * * *`. Paid Apify plan covers the
+increased run count. iteration-3-fixes.md Fix 2 closed.
 
 ### 8. Is the Profile-views data going to get logged into the sheet you previously built, in addition to the backend?
 
@@ -162,8 +165,7 @@ Pulled from the answers above so they're easy to track:
 1. **Calendar event format** — confirm the pattern Scott uses for
    filming events (title format, attendees, etc.) so Scripting can
    reliably match events to students.
-2. **Profile-views cadence** — confirm the move from Thursday to
-   Friday 9 AM (Q7).
+2. **Profile-views cadence** — closed 2026-05-11 (Q7); now daily 9 AM.
 3. **Sheet sync direction** — share the link to the existing Google
    Sheet, confirm columns, and decide one-way or two-way (Q8).
 4. **Apify daily cadence** — once Caiden surfaces the actual cost
@@ -174,7 +176,7 @@ Pulled from the answers above so they're easy to track:
 ## Items going to iteration-3 backlog as a result of this Q&A
 
 - Manual scripting trigger (Q2)
-- Profile-views cadence move to Friday 9 AM (Q7)
+- ~~Profile-views cadence move to Friday 9 AM (Q7)~~ — superseded by daily cadence, shipped 2026-05-11
 - Google Sheet sync for Profile-views data (Q8)
 - Brand-account SIGNALS subsection (Q9)
 - Self-serve student creation that auto-distributes onboarding URL

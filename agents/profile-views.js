@@ -1,8 +1,8 @@
 // Profile Views Agent — daily scrape of every tracked post URL.
-// Trigger: Cron job, Thursday 9 AM (`0 9 * * 4`). Registered in server.js
-// behind APIFY_API_TOKEN env-gate. (Cadence flips to daily once Scott's
-// Apify token replaces Caiden's free-tier token in `.env` — see
-// `iteration-3-fixes.md` Fix 2.)
+// Trigger: Cron job, daily 9 AM (`0 9 * * *`). Registered in server.js
+// behind APIFY_API_TOKEN env-gate. Cadence flipped from weekly Thursday
+// to daily on 2026-05-11 once Scott confirmed the paid Apify plan
+// covered the increased run count (iteration-3-fixes.md Fix 2).
 //
 // Spec: docs/profile-views-rebuild-spec.md (source of truth — do not deviate
 // without updating it first).

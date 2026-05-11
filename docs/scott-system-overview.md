@@ -62,9 +62,11 @@ Pulls every meeting transcript from Fireflies, extracts action items
 via Claude, creates ClickUp tasks for each one. Replaces what used to
 be manual note-taking and follow-up assignment.
 
-### Profile-views · Thursday 9 AM
-Once a week, scrapes view counts from every student's profiles. Tracks
-growth over time so the Performance agent has data to analyze.
+### Profile-views · daily 9 AM
+Every morning, scrapes view counts for every tracked post URL via
+Apify, computes weekly deltas, and pushes them back to the Content
+Performance Tracker sheet. Tracks growth over time so the Performance
+agent has data to analyze.
 
 ---
 
