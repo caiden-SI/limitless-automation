@@ -713,10 +713,9 @@ async function postLogOnlyCommentIfNeeded({ campusId, validatorResults, clickupT
  * full rollback (orphan scores with broken FKs are worse than a retry).
  */
 async function writeConcepts({ campus, student, event, concepts, claimId, validatorResults }) {
-  const INTERNAL_FIELD = process.env.CLICKUP_INTERNAL_VIDEO_NAME_FIELD_ID;
   const PROJECT_FIELD = process.env.CLICKUP_PROJECT_DESCRIPTION_FIELD_ID;
-  if (!INTERNAL_FIELD || !PROJECT_FIELD) {
-    throw new Error('CLICKUP_INTERNAL_VIDEO_NAME_FIELD_ID and CLICKUP_PROJECT_DESCRIPTION_FIELD_ID must be set in .env');
+  if (!PROJECT_FIELD) {
+    throw new Error('CLICKUP_PROJECT_DESCRIPTION_FIELD_ID must be set in .env');
   }
   if (!campus.clickup_list_id) {
     throw new Error(`Campus ${campus.id} has no clickup_list_id configured`);
@@ -795,7 +794,6 @@ async function writeConcepts({ campus, student, event, concepts, claimId, valida
       const taskId = task.id;
       createdClickupIds.push(taskId);
 
-      await clickup.setCustomField(taskId, INTERNAL_FIELD, concept.title);
       await clickup.setCustomField(taskId, PROJECT_FIELD, concept.script);
 
       const { error: uErr } = await supabase

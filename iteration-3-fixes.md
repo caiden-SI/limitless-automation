@@ -938,6 +938,75 @@ depends on for editor-rejection signaling.
 
 ---
 
+## Fix 12 — Pipeline share-link write targets a removed ClickUp custom field
+
+**Status:** Latent. Gated behind Fix 9 (Frame.io v4 OAuth deferred), so it
+won't fire in production today. Surfaced 2026-05-12 while resolving a
+parallel `CLICKUP_INTERNAL_VIDEO_NAME_FIELD_ID` failure during the Fix 10
+(calendar attendee matching) verification — the same ClickUp-list-cleanup
+that removed the "Internal Video Name" field also removed "E - Frame Link".
+
+**Problem:** `agents/pipeline.js` `createShareLink` (around line 506) does
+`clickup.setCustomField(taskId, process.env.CLICKUP_FRAMEIO_FIELD_ID, shareUrl)`
+on the `done` transition. The field no longer exists on the Austin list, so
+the call will fail the moment this code path actually runs end-to-end.
+Today it never reaches the setCustomField call because
+`frameio.createShareLink(...)` (one line above) throws first when Fix 9's
+OAuth isn't wired — but the moment Fix 9 unblocks, the latent breakage
+surfaces as a `done`-transition rollback.
+
+A second site reads the same env var: `syncFrameioLink` (around line 341)
+reads the field on the `edited` transition. That path is graceful — if the
+field is missing the read returns null and the function logs
+`frameio_link_sync_skipped` and returns. Not a hard failure, but it means
+the editor-side URL pickup is silently broken too: `videos.frameio_asset_id`
+will never populate from ClickUp, so QA's asset-id-aware logic loses one
+of its inputs.
+
+**Fix options (pick one when Fix 9 unblocks):**
+
+1. **Re-add the field to the ClickUp list.** Cheapest. Scott creates a
+   "E - Frame Link" URL/text custom field on the Austin list, captures the
+   new field ID, and updates `CLICKUP_FRAMEIO_FIELD_ID` in `.env` on both
+   MacBook and Mac Mini. No code change. Both sites resume working.
+
+2. **Drop the auto-write, surface the share URL elsewhere.** If Scott
+   decided the field was clutter, mirror the Scripting fix from this
+   session: stop writing to the deleted custom field, and instead either
+   (a) include the share URL in the task description (visible inline), or
+   (b) post a ClickUp comment on the task with the URL. Update
+   `syncFrameioLink` to scan the task body/comments for a Frame.io URL
+   instead of reading the field.
+
+**Files to touch (whichever option):**
+
+- `agents/pipeline.js` `createShareLink` — replace or drop the
+  `setCustomField` call. If option 1, no code change.
+- `agents/pipeline.js` `syncFrameioLink` — drop or rewrite the field-read.
+  If option 1, no code change.
+- `.env` and `.env.example` — either set `CLICKUP_FRAMEIO_FIELD_ID` to the
+  new field ID (option 1), or mark it deprecated alongside
+  `CLICKUP_INTERNAL_VIDEO_NAME_FIELD_ID` (option 2).
+
+**Why this is filed separately:** This is dormant behind Fix 9. Bundling
+the resolution with the Fix 9 revival playbook is more efficient than
+shipping a speculative pipeline rewrite now. Documenting it ensures the
+moment Fix 9 unblocks, this doesn't surface in production as a mystery
+rollback on the first `done` transition.
+
+**Acceptance:**
+
+- After Fix 9 ships, a video moved to `done` produces a Frame.io share
+  link and either (a) populates the re-added custom field, or (b) lands
+  in the task description / comment as decided.
+- `syncFrameioLink` on the `edited` transition either reads from the
+  re-added field or from the new location (description / comment), and
+  `videos.frameio_asset_id` populates as expected.
+- No regression to `edited` → QA gating (QA already runs regardless of
+  whether the asset ID resolved — current code handles this).
+
+---
+
 ## Open items requiring Scott's input (not code fixes — Caiden's job to ask)
 
 These block their corresponding fixes above and don't belong in a
