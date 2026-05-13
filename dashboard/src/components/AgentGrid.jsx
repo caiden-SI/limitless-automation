@@ -18,6 +18,7 @@
 // not inlined here.
 
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { AGENT_REGISTRY, nextCronFire } from '../lib/agents';
 import { timeAgo } from '../lib/health';
 import { useAgentLogsWindow } from '../lib/hooks';
@@ -38,7 +39,17 @@ export default function AgentGrid({ campusId }) {
 
   return (
     <section id="agent-grid" aria-label="Agents">
-      <SectionTitle right={`${REGISTRY_ORDER.length} ON · 24h`}>
+      <SectionTitle
+        right={
+          <>
+            <Link to="/scripting" className="lim-section-title__link">+ /scripting</Link>
+            {'  '}
+            <Link to="/students" className="lim-section-title__link">+ /students</Link>
+            {'  '}
+            · {REGISTRY_ORDER.length} ON · 24h
+          </>
+        }
+      >
         AGENTS
       </SectionTitle>
       <div className="lim-cpv-agents">
