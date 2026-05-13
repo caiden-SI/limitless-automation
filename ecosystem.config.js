@@ -8,6 +8,7 @@ module.exports = {
     {
       name: 'limitless-webhooks',
       script: 'server.js',
+      cwd: __dirname,
       instances: 1,
       watch: false,
       env: {
@@ -43,6 +44,7 @@ module.exports = {
       // can reach it, not just localhost.
       name: 'limitless-dashboard',
       script: 'dashboard/serve.cjs',
+      cwd: __dirname,
       instances: 1,
       watch: false,
       autorestart: true,
@@ -67,6 +69,7 @@ module.exports = {
       // FFmpeg / Resources pulse cells. Spec: docs/dashboard-phase-a-spec.md.
       name: 'limitless-health-ping',
       script: 'scripts/health-ping.js',
+      cwd: __dirname,
       autorestart: false,
       watch: false,
       cron_restart: '*/1 * * * *',
