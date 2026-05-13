@@ -289,7 +289,25 @@ async function assignEditor(taskId, campusId) {
 /**
  * Trigger QA checks when an editor marks a video as edited.
  * If QA passes, the video is eligible for Frame.io upload.
- * If QA fails, issues are posted to ClickUp and status set to waiting.
+ * If QA fails, the report has already been posted to ClickUp by
+ * qa.runQA and qa_passed=false has been written to Supabase — but
+ * the task status stays at "edited" so an operator can decide what
+ * to do next.
+ *
+ * QA is advisory, NOT a gate. Auto-flipping the ClickUp status to
+ * "waiting" on failure created a recursive loop: when an operator
+ * manually moved the task back to "edited" after acknowledging the
+ * report, the move re-fired the ClickUp webhook → triggerQA → QA
+ * still failed → status flipped to "waiting" again. The operator
+ * had to win a race they couldn't win.
+ *
+ * Removed in this hotfix: the clickup.updateTask({status:'waiting'})
+ * call and the matching supabase videos.status update. Everything
+ * else stays — qa.runQA still writes qa_passed and posts the
+ * formatted report as a ClickUp comment, and qa_gate_blocked still
+ * logs to agent_logs so the dashboard's QA panel can surface the
+ * failure. The Frame.io review-comment path (handleReviewComment)
+ * is unrelated and is the only remaining auto-flip-to-waiting flow.
  */
 async function triggerQA(taskId, campusId) {
   const { video, campus } = await resolveTask(taskId, campusId);
@@ -306,15 +324,10 @@ async function triggerQA(taskId, campusId) {
     // QA passed — video is now eligible for Frame.io upload.
     // The actual upload happens when status moves to done.
   } else {
-    // Update ClickUp status to waiting
-    await clickup.updateTask(taskId, { status: 'waiting' });
-
-    // Update status in Supabase to reflect the block
-    await supabase
-      .from('videos')
-      .update({ status: dbStatus('waiting'), updated_at: new Date().toISOString() })
-      .eq('id', video.id);
-
+    // QA failed. Report + qa_passed=false already persisted by qa.runQA.
+    // We log the block so the dashboard surfaces it, but we do NOT flip
+    // the ClickUp or Supabase status — operator decides whether to send
+    // the task back to in-editing.
     await log({
       campusId: campus.id,
       agent: AGENT_NAME,
