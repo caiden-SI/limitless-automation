@@ -1,0 +1,282 @@
+/* Scripting console — local-only styles. Layout reuses lim-pipe-stage +
+ * lim-header2 from ops.css; everything below targets the form, the 3
+ * concept cards, and the inline error/abort blocks. */
+
+.lim-sc-caution {
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--ink-3);
+  padding: 8px 12px;
+  background: color-mix(in srgb, var(--amber) 8%, transparent);
+  border-left: 2px solid var(--amber);
+  border-radius: 4px;
+}
+
+.lim-sc-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 18px 20px;
+  background: var(--card-bg);
+  border: 1px solid var(--card-border);
+  border-radius: 12px;
+}
+
+.lim-sc-row {
+  display: grid;
+  grid-template-columns: 120px 1fr;
+  align-items: center;
+  gap: 12px;
+}
+
+@media (max-width: 600px) {
+  .lim-sc-row {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
+}
+
+.lim-sc-label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  color: var(--ink-2);
+  text-transform: uppercase;
+}
+
+.lim-sc-input {
+  font: inherit;
+  font-size: 14px;
+  padding: 10px 12px;
+  border: 1px solid var(--card-border);
+  border-radius: 6px;
+  background: var(--card-bg-2, var(--card-bg));
+  color: var(--ink);
+  outline: none;
+}
+
+.lim-sc-input:focus {
+  border-color: var(--ink-3);
+}
+
+.lim-sc-input:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.lim-sc-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
+.lim-sc-primary,
+.lim-sc-secondary {
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.10em;
+  padding: 10px 18px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: opacity 0.15s ease, transform 0.05s ease;
+}
+
+.lim-sc-primary {
+  background: var(--ink);
+  color: var(--bg);
+  border: 1px solid var(--ink);
+}
+
+.lim-sc-secondary {
+  background: transparent;
+  color: var(--ink);
+  border: 1px solid var(--card-border);
+}
+
+.lim-sc-primary:hover:not(:disabled),
+.lim-sc-secondary:hover:not(:disabled) {
+  opacity: 0.85;
+}
+
+.lim-sc-primary:active:not(:disabled),
+.lim-sc-secondary:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.lim-sc-primary:disabled,
+.lim-sc-secondary:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.lim-sc-error,
+.lim-sc-empty,
+.lim-sc-inline-error {
+  font-size: 12px;
+  padding: 10px 12px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--red) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--red) 25%, transparent);
+  color: var(--ink);
+}
+
+.lim-sc-empty {
+  background: color-mix(in srgb, var(--amber) 8%, transparent);
+  border-color: color-mix(in srgb, var(--amber) 25%, transparent);
+  color: var(--ink-2);
+}
+
+.lim-sc-inline-error {
+  margin: 8px 0 4px;
+  font-size: 12px;
+}
+
+.lim-sc-error-block {
+  padding: 14px 16px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--red) 7%, transparent);
+  border: 1px solid color-mix(in srgb, var(--red) 22%, transparent);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.lim-sc-error-title {
+  font-weight: 700;
+  font-size: 13px;
+  letter-spacing: 0.04em;
+  color: var(--ink);
+}
+
+.lim-sc-error-body {
+  font-size: 13px;
+  color: var(--ink-2);
+}
+
+.lim-sc-issue-list {
+  margin: 4px 0 0;
+  padding-left: 18px;
+  font-size: 12px;
+  color: var(--ink-2);
+  line-height: 1.5;
+}
+
+.lim-sc-issue-list li {
+  margin-bottom: 4px;
+}
+
+.lim-sc-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 18px 20px;
+  background: var(--card-bg);
+  border: 1px solid var(--card-border);
+  border-radius: 12px;
+}
+
+.lim-sc-card--pushed {
+  opacity: 0.78;
+}
+
+.lim-sc-card-head {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  color: var(--ink-3);
+}
+
+.lim-sc-fields {
+  display: grid;
+  grid-template-columns: 110px 1fr;
+  gap: 6px 14px;
+  margin: 0;
+}
+
+.lim-sc-fields dt {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  color: var(--ink-3);
+  padding-top: 4px;
+  text-transform: uppercase;
+}
+
+.lim-sc-fields dd {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--ink);
+}
+
+.lim-sc-script {
+  white-space: pre-wrap;
+}
+
+.lim-sc-direction {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.lim-sc-refine-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.lim-sc-refine-form textarea {
+  font: inherit;
+  font-size: 13px;
+  padding: 10px 12px;
+  border: 1px solid var(--card-border);
+  border-radius: 6px;
+  background: var(--card-bg-2, var(--card-bg));
+  color: var(--ink);
+  resize: vertical;
+  min-height: 60px;
+  outline: none;
+}
+
+.lim-sc-refine-form textarea:focus {
+  border-color: var(--ink-3);
+}
+
+.lim-sc-refine-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
+.lim-sc-pushed {
+  font-size: 12px;
+  color: var(--ink-2);
+  padding-top: 4px;
+}
+
+.lim-sc-pushed a {
+  color: var(--ink);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.lim-sc-footer-hint {
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--ink-3);
+  text-align: right;
+  padding-top: 4px;
+}
+
+@media (max-width: 600px) {
+  .lim-sc-fields {
+    grid-template-columns: 1fr;
+    gap: 2px 0;
+  }
+  .lim-sc-fields dt {
+    padding-top: 8px;
+  }
+}

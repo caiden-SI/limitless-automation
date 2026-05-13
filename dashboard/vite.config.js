@@ -7,6 +7,7 @@ export default defineConfig({
   server: {
     proxy: {
       '/onboarding': 'http://localhost:3000',
+      '/admin': 'http://localhost:3000',
     },
   },
 })
