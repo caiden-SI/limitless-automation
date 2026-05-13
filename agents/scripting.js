@@ -269,8 +269,14 @@ async function loadContext({ campusId, student }) {
  * instruction when Claude's first attempt failed structural or voice validation.
  * `genConstraints` is the output of validator.buildGenerationConstraints —
  * the hard constraints + soft guidelines that mirror the validator's rules.
+ *
+ * Optional `userConcept` ({ title }) routes the prompt through the manual
+ * /admin/scripting/generate path: Claude is instructed to produce 3 variations
+ * of a single operator-supplied concept rather than 3 open-ended concepts.
+ * When omitted (the cron path) the produced prompt is byte-identical to the
+ * pre-userConcept version — verified by scripts/snapshot-scripting-prompt.js.
  */
-function buildPrompt({ student, context, genConstraints, validationError }) {
+function buildPrompt({ student, context, genConstraints, validationError, userConcept }) {
   const { studentContext, performanceSignals, researchBenchmarks } = context;
   const hc = genConstraints?.hardConstraints;
   const sg = genConstraints?.softGuidelines;
@@ -350,6 +356,23 @@ function buildPrompt({ student, context, genConstraints, validationError }) {
     userParts.push('', 'STUDENT CONTEXT: (none available — hedge and produce more generic concepts grounded in general Alpha School positioning)');
   }
 
+  if (userConcept && userConcept.title) {
+    userParts.push(
+      '',
+      'USER-SPECIFIED CONCEPT (THREE VARIATIONS REQUIRED):',
+      'The operator has supplied this concept. Generate 3 distinct VARIATIONS',
+      'of it — each must clearly be the same underlying idea, but with a',
+      'different hook angle, different opening, and different shot direction.',
+      'Do NOT generate three unrelated concepts.',
+      '',
+      `Title: ${userConcept.title}`,
+      '',
+      'The `title` field in each output object should be a short distinct',
+      'variant (e.g., "AI Homework Flip", "Homework Trap", "AI Did The Hw")',
+      "that reflects this concept, not a generic recap of the user's title."
+    );
+  }
+
   if (performanceSignals) {
     const { top_hooks, top_formats, top_topics, underperforming_patterns, recommendations, summary } = performanceSignals;
     const lines = ['', 'RECENT PERFORMANCE SIGNALS (what is working for this campus):'];
@@ -414,12 +437,12 @@ function buildPrompt({ student, context, genConstraints, validationError }) {
  * Throws on structural / Claude-parse / validator-crash failures (existing contract
  * — outer processEvent catch releases the claim via self-heal).
  */
-async function generateConcepts({ campusId, student, context, validatorContext, genConstraints }) {
+async function generateConcepts({ campusId, student, context, validatorContext, genConstraints, userConcept }) {
   let lastError = null;
   const attemptIssues = [];
 
   for (let attempt = 1; attempt <= 2; attempt++) {
-    const { system, prompt } = buildPrompt({ student, context, genConstraints, validationError: lastError });
+    const { system, prompt } = buildPrompt({ student, context, genConstraints, validationError: lastError, userConcept });
 
     let raw;
     try {
@@ -489,48 +512,258 @@ async function generateConcepts({ campusId, student, context, validatorContext, 
 }
 
 /**
- * Throw on the first validation violation. Error string is precise enough
- * to hand back to Claude on retry.
+ * Build the refine-mode system + user prompt. Single concept in, single
+ * concept out. Shares the hard-constraint and soft-guideline blocks with
+ * buildPrompt so the validator's rule set stays the one source of truth.
+ */
+function buildRefinePrompt({ student, context, genConstraints, originalConcept, refinementInput, validationError }) {
+  const { studentContext, performanceSignals, researchBenchmarks } = context;
+  const hc = genConstraints?.hardConstraints;
+  const sg = genConstraints?.softGuidelines;
+
+  const sysParts = [
+    `You are a content strategist for Alpha School, a private K-12 school network.`,
+    `You generate short-form video scripts (30-60 seconds) for student creators.`,
+    ``,
+    `OUTPUT FORMAT: Return a single JSON object representing one revised concept. No prose wrapper, no markdown fences. The object has:`,
+    `  - title: string, 1 to 4 words`,
+    `  - hook_type: one of [${HOOK_TYPES.join(', ')}]`,
+    `  - hook_angle: one sentence describing the opening angle`,
+    `  - script: 70 to 150 words, reads as 30 to 60 seconds spoken`,
+    `  - creative_direction: non-empty array of short bullet strings (visual/shot/delivery cues)`,
+    ``,
+    `Match the student's brand voice exactly. Keep language natural for a high school student.`,
+  ];
+
+  if (hc) {
+    const lines = ['', 'HARD CONSTRAINTS (non-negotiable — any violation fails validation):'];
+    if (Array.isArray(hc.ai_tell_blocklist) && hc.ai_tell_blocklist.length) {
+      lines.push(
+        `- Your output MUST NOT contain any of these phrases (case-insensitive): ${hc.ai_tell_blocklist.map((p) => `"${p}"`).join(', ')}.`
+      );
+    }
+    if (hc.length_bounds && hc.length_bounds.unit === 'words') {
+      lines.push(`- Script length MUST be between ${hc.length_bounds.min} and ${hc.length_bounds.max} ${hc.length_bounds.unit}.`);
+    } else if (hc.length_bounds && hc.length_bounds.unit === 'segments') {
+      lines.push(
+        `- On-screen text: MUST have ${hc.length_bounds.minSegments}-${hc.length_bounds.maxSegments} segments, each ≤ ${hc.length_bounds.maxWordsPerSegment} words.`
+      );
+    }
+    if (Array.isArray(hc.brand_dictionary) && hc.brand_dictionary.length) {
+      lines.push(
+        `- Brand terms MUST be spelled exactly as listed (case-sensitive): ${hc.brand_dictionary.map((t) => t.term).join(', ')}.`
+      );
+    }
+    if (Array.isArray(hc.forbidden_generic_openers) && hc.forbidden_generic_openers.length) {
+      lines.push(
+        `- Script MUST NOT open with any of: ${hc.forbidden_generic_openers.map((o) => `"${o}"`).join(', ')}.`
+      );
+    }
+    lines.push(`- Last sentence MUST NOT be only a CTA ("Follow for more", "Like and subscribe"). Payoff first.`);
+    if (Array.isArray(hc.allowed_proper_nouns) && hc.allowed_proper_nouns.length) {
+      lines.push(
+        `- Only these proper nouns are allowed to appear in the concept: ${hc.allowed_proper_nouns.slice(0, 40).join(', ')}. Do not invent names, schools, projects, or handles.`
+      );
+    }
+    sysParts.push(...lines);
+  }
+
+  if (sg) {
+    const lines = ['', 'VOICE GUIDELINES (use as context, not hard rules):'];
+    if (Array.isArray(sg.tone_dimensions) && sg.tone_dimensions.length) {
+      lines.push(`- The student's voice tends to be: ${sg.tone_dimensions.join(', ')}.`);
+    }
+    if (Array.isArray(sg.voice_excerpts) && sg.voice_excerpts.length) {
+      lines.push(`- Excerpts from creators whose voice the student has said they want to match:`);
+      for (const e of sg.voice_excerpts) {
+        lines.push(`    [${e.source}] "${String(e.text).slice(0, 240)}"`);
+      }
+    }
+    if (sg.format_hook_shape) {
+      lines.push(`- For ${sg.format} format: ${sg.format_hook_shape}.`);
+    }
+    sysParts.push(...lines);
+  }
+
+  const userParts = [];
+  userParts.push(`STUDENT: ${student.name}`);
+  if (studentContext) {
+    userParts.push('', 'STUDENT CONTEXT (claude_project_context, verbatim):', studentContext);
+  } else {
+    userParts.push('', 'STUDENT CONTEXT: (none available — hedge and produce a more generic concept grounded in general Alpha School positioning)');
+  }
+
+  userParts.push(
+    '',
+    'ORIGINAL CONCEPT (revise this):',
+    JSON.stringify(originalConcept, null, 2),
+    '',
+    'OPERATOR REFINEMENT REQUEST:',
+    String(refinementInput || '').trim() || '(no specific guidance — improve the concept)',
+    '',
+    'Produce a single revised concept object that honors the refinement request while staying anchored to the original idea. Return ONE object, not an array.'
+  );
+
+  if (performanceSignals) {
+    const { top_hooks, top_formats, top_topics, underperforming_patterns, recommendations, summary } = performanceSignals;
+    const lines = ['', 'RECENT PERFORMANCE SIGNALS (what is working for this campus):'];
+    if (summary) lines.push(`Summary: ${summary}`);
+    if (Array.isArray(top_hooks) && top_hooks.length) lines.push(`Top hooks: ${JSON.stringify(top_hooks.slice(0, 3))}`);
+    if (Array.isArray(top_formats) && top_formats.length) lines.push(`Top formats: ${JSON.stringify(top_formats.slice(0, 3))}`);
+    if (Array.isArray(top_topics) && top_topics.length) lines.push(`Top topics: ${JSON.stringify(top_topics.slice(0, 5))}`);
+    if (Array.isArray(underperforming_patterns) && underperforming_patterns.length) {
+      lines.push(`Underperforming patterns to avoid: ${JSON.stringify(underperforming_patterns)}`);
+    }
+    if (Array.isArray(recommendations) && recommendations.length) {
+      lines.push(`Recommendations: ${JSON.stringify(recommendations)}`);
+    }
+    userParts.push(...lines);
+  }
+
+  if (researchBenchmarks && researchBenchmarks.length) {
+    userParts.push('', 'RESEARCH LIBRARY BENCHMARKS (top external videos by view count — study the hook patterns, do not copy):');
+    for (const r of researchBenchmarks) {
+      userParts.push(
+        `- [${r.platform || '?'} | ${r.hook_type || '?'} | ${r.format || '?'} | ${r.view_count || '?'} views] ${String(r.transcript || '').slice(0, 240)}`
+      );
+    }
+  }
+
+  if (validationError) {
+    userParts.push(
+      '',
+      `PREVIOUS ATTEMPT FAILED VALIDATION: ${validationError}`,
+      'Fix the specific issue and return the corrected JSON object. Do not include any explanation.'
+    );
+  }
+
+  return { system: sysParts.join('\n'), prompt: userParts.join('\n') };
+}
+
+/**
+ * Refine a single concept based on operator input. Same 2-attempt budget as
+ * generateConcepts. Returns `{ concept, validatorResult }` on success or
+ * `{ aborted: true, issues, attempts: 2 }` on second voice failure. Throws
+ * on structural / Claude-parse failures (the route handler maps to 500).
+ */
+async function refineConcept({ campusId, student, context, validatorContext, genConstraints, originalConcept, refinementInput }) {
+  let lastError = null;
+  const attemptIssues = [];
+
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    const { system, prompt } = buildRefinePrompt({
+      student,
+      context,
+      genConstraints,
+      originalConcept,
+      refinementInput,
+      validationError: lastError,
+    });
+
+    let raw;
+    try {
+      raw = await askJson({ system, prompt, maxTokens: 1500, callerAgent: 'scripting', campusId });
+    } catch (err) {
+      lastError = err.message;
+      if (attempt === 2) throw new Error(`Claude failed to return valid JSON after retry: ${err.message}`);
+      await log({ campusId, agent: AGENT_NAME, action: 'refine_claude_parse_failed_retrying', status: 'warning', errorMessage: err.message });
+      continue;
+    }
+
+    try {
+      validateConceptShape(raw, 1);
+    } catch (err) {
+      lastError = err.message;
+      if (attempt === 2) throw new Error(`Refined concept validation failed after retry: ${err.message}`);
+      await log({ campusId, agent: AGENT_NAME, action: 'refine_validation_failed_retrying', status: 'warning', errorMessage: err.message });
+      continue;
+    }
+
+    const validatorResults = await validator.validateConcepts([raw], student, {
+      campusId,
+      sharedContext: validatorContext,
+    });
+    const validatorResult = validatorResults[0];
+    const mode = validatorResult?.mode || 'log_only';
+
+    if (validatorResult.overall_passed || mode === 'log_only' || mode === 'off') {
+      return { concept: raw, validatorResult };
+    }
+
+    const issuesForAttempt = [];
+    if (Array.isArray(validatorResult.layer1_issues)) {
+      for (const issue of validatorResult.layer1_issues) {
+        issuesForAttempt.push({ layer: 1, ...issue });
+      }
+    }
+    if (validatorResult.layer2_passed === false) {
+      issuesForAttempt.push({ layer: 2, rule: 'voice_fit', detail: validatorResult.layer2_notes || 'layer 2 scores below threshold' });
+    }
+    attemptIssues.push({ attempt, issues: issuesForAttempt });
+
+    if (attempt === 2) {
+      return { aborted: true, issues: attemptIssues, attempts: 2 };
+    }
+
+    lastError = `Brand voice validation failed. Issues: ${JSON.stringify(issuesForAttempt).slice(0, 1500)}`;
+    await log({
+      campusId,
+      agent: AGENT_NAME,
+      action: 'refine_voice_validation_failed_retrying',
+      status: 'warning',
+      payload: { issueCount: issuesForAttempt.length, firstIssue: issuesForAttempt[0] },
+    });
+  }
+}
+
+/**
+ * Throw on the first structural violation of one concept object. Reused by
+ * the 3-concept validator below and by refineConcept's single-concept path.
+ */
+function validateConceptShape(c, idx = 1) {
+  if (!c || typeof c !== 'object') throw new Error(`Concept ${idx} is not an object`);
+
+  for (const field of ['title', 'hook_type', 'hook_angle', 'script', 'creative_direction']) {
+    if (!(field in c)) throw new Error(`Concept ${idx} missing field "${field}"`);
+  }
+
+  if (typeof c.title !== 'string') throw new Error(`Concept ${idx} title must be a string`);
+  const titleWords = c.title.trim().split(/\s+/).filter(Boolean);
+  if (titleWords.length < 1 || titleWords.length > 4) {
+    throw new Error(`Concept ${idx} title must be 1 to 4 words, got ${titleWords.length} ("${c.title}")`);
+  }
+
+  if (!HOOK_TYPES.includes(c.hook_type)) {
+    throw new Error(`Concept ${idx} hook_type "${c.hook_type}" not in [${HOOK_TYPES.join(', ')}]`);
+  }
+
+  if (typeof c.hook_angle !== 'string' || !c.hook_angle.trim()) {
+    throw new Error(`Concept ${idx} hook_angle must be a non-empty string`);
+  }
+
+  if (typeof c.script !== 'string') throw new Error(`Concept ${idx} script must be a string`);
+  const scriptWords = c.script.trim().split(/\s+/).filter(Boolean);
+  if (scriptWords.length < 70 || scriptWords.length > 150) {
+    throw new Error(`Concept ${idx} script must be 70 to 150 words, got ${scriptWords.length}`);
+  }
+
+  if (!Array.isArray(c.creative_direction) || c.creative_direction.length === 0) {
+    throw new Error(`Concept ${idx} creative_direction must be a non-empty array`);
+  }
+  if (!c.creative_direction.every((x) => typeof x === 'string' && x.trim())) {
+    throw new Error(`Concept ${idx} creative_direction must be all non-empty strings`);
+  }
+}
+
+/**
+ * Throw on the first validation violation of the 3-concept array. Error
+ * string is precise enough to hand back to Claude on retry.
  */
 function validateConcepts(raw) {
   if (!Array.isArray(raw)) throw new Error('Output is not a JSON array');
   if (raw.length !== 3) throw new Error(`Expected exactly 3 concepts, got ${raw.length}`);
 
-  raw.forEach((c, i) => {
-    const idx = i + 1;
-    if (!c || typeof c !== 'object') throw new Error(`Concept ${idx} is not an object`);
-
-    for (const field of ['title', 'hook_type', 'hook_angle', 'script', 'creative_direction']) {
-      if (!(field in c)) throw new Error(`Concept ${idx} missing field "${field}"`);
-    }
-
-    if (typeof c.title !== 'string') throw new Error(`Concept ${idx} title must be a string`);
-    const titleWords = c.title.trim().split(/\s+/).filter(Boolean);
-    if (titleWords.length < 1 || titleWords.length > 4) {
-      throw new Error(`Concept ${idx} title must be 1 to 4 words, got ${titleWords.length} ("${c.title}")`);
-    }
-
-    if (!HOOK_TYPES.includes(c.hook_type)) {
-      throw new Error(`Concept ${idx} hook_type "${c.hook_type}" not in [${HOOK_TYPES.join(', ')}]`);
-    }
-
-    if (typeof c.hook_angle !== 'string' || !c.hook_angle.trim()) {
-      throw new Error(`Concept ${idx} hook_angle must be a non-empty string`);
-    }
-
-    if (typeof c.script !== 'string') throw new Error(`Concept ${idx} script must be a string`);
-    const scriptWords = c.script.trim().split(/\s+/).filter(Boolean);
-    if (scriptWords.length < 70 || scriptWords.length > 150) {
-      throw new Error(`Concept ${idx} script must be 70 to 150 words, got ${scriptWords.length}`);
-    }
-
-    if (!Array.isArray(c.creative_direction) || c.creative_direction.length === 0) {
-      throw new Error(`Concept ${idx} creative_direction must be a non-empty array`);
-    }
-    if (!c.creative_direction.every((x) => typeof x === 'string' && x.trim())) {
-      throw new Error(`Concept ${idx} creative_direction must be all non-empty strings`);
-    }
-  });
+  raw.forEach((c, i) => validateConceptShape(c, i + 1));
 }
 
 /**
@@ -702,76 +935,111 @@ async function postLogOnlyCommentIfNeeded({ campusId, validatorResults, clickupT
 }
 
 /**
- * Insert 3 videos rows, create 3 ClickUp tasks with custom fields, wire
- * clickup_task_id back onto videos, then transition the existing claim row
- * from "pending" to "completed". On any write failure, roll back and either
- * release the claim (on clean rollback) or mark it failed_cleanup (on
- * partial rollback failure — halts automatic retry).
+ * Push ONE concept into the production pipeline: insert a videos row,
+ * create the ClickUp task with the script wired into the Project
+ * Description custom field, and link the task ID back onto the videos row.
  *
- * Also persists one video_quality_scores row per concept inside the same
- * try block as the videos insert, so a score-insert failure triggers the
- * full rollback (orphan scores with broken FKs are worse than a retry).
+ * Manual /admin/scripting/push uses this directly (no rollback — orphan
+ * videos rows on partial failure are surfaced as 500 to the operator).
+ * The cron writeConcepts loops it 3× wrapped in the existing rollback,
+ * tracking partial state via err.partial so a mid-flow failure can still
+ * archive the half-created task and delete the half-orphaned video.
+ *
+ * Returns { videoId, taskId, taskUrl }. Throws on any side-effect failure;
+ * the thrown Error carries a `.partial` map of { videoId?, taskId?, taskUrl? }
+ * reflecting whichever steps had already committed before the failure.
  */
-async function writeConcepts({ campus, student, event, concepts, claimId, validatorResults }) {
+async function pushConceptToClickUp(concept, { campus, student }) {
   const PROJECT_FIELD = process.env.CLICKUP_PROJECT_DESCRIPTION_FIELD_ID;
   if (!PROJECT_FIELD) {
     throw new Error('CLICKUP_PROJECT_DESCRIPTION_FIELD_ID must be set in .env');
   }
-  if (!campus.clickup_list_id) {
-    throw new Error(`Campus ${campus.id} has no clickup_list_id configured`);
+  if (!campus || !campus.clickup_list_id) {
+    throw new Error(`Campus ${campus?.id} has no clickup_list_id configured`);
   }
+
+  const partial = {};
+
+  try {
+    const { data: video, error: iErr } = await supabase
+      .from('videos')
+      .insert({
+        campus_id: campus.id,
+        student_id: student.id,
+        student_name: student.name,
+        status: dbStatus('idea'),
+        title: concept.title,
+        script: JSON.stringify(concept),
+      })
+      .select('id')
+      .single();
+    if (iErr) throw new Error(`Supabase insert failed (videos): ${iErr.message}`);
+    partial.videoId = video.id;
+
+    const task = await clickup.createTask(campus.clickup_list_id, {
+      name: concept.title,
+      description: concept.hook_angle,
+      status: 'idea',
+    });
+    partial.taskId = task.id;
+    partial.taskUrl = task.url || `https://app.clickup.com/t/${task.id}`;
+
+    await clickup.setCustomField(task.id, PROJECT_FIELD, concept.script);
+
+    const { error: uErr } = await supabase
+      .from('videos')
+      .update({ clickup_task_id: task.id, updated_at: new Date().toISOString() })
+      .eq('id', video.id);
+    if (uErr) throw new Error(`Supabase update failed (videos.clickup_task_id): ${uErr.message}`);
+
+    return { videoId: video.id, taskId: task.id, taskUrl: partial.taskUrl };
+  } catch (err) {
+    err.partial = partial;
+    throw err;
+  }
+}
+
+/**
+ * Cron-only orchestrator. Loops pushConceptToClickUp once per concept,
+ * inserts one video_quality_scores row per iteration (manual pushes don't
+ * carry validator results so this stays in the cron path), and transitions
+ * the claim from "pending" to "completed" once every side effect lands.
+ *
+ * On any per-iteration failure the rollback function deletes all videos
+ * created so far (including the half-orphaned one whose task failed mid-
+ * flow, recovered via err.partial), archives the corresponding ClickUp
+ * tasks, and either releases or quarantines the claim row.
+ */
+async function writeConcepts({ campus, student, event, concepts, claimId, validatorResults }) {
   if (!claimId) {
     throw new Error('writeConcepts called without a claimId — atomic claim is required');
   }
 
-  // Atomic 3-row insert
-  const rows = concepts.map((c) => ({
-    campus_id: campus.id,
-    student_id: student.id,
-    student_name: student.name,
-    status: dbStatus('idea'),
-    title: c.title,
-    script: JSON.stringify(c),
-  }));
-
-  const { data: insertedVideos, error: iErr } = await supabase.from('videos').insert(rows).select('id, title');
-  if (iErr) {
-    await rollback({
-      campusId: campus.id,
-      eventId: event.id,
-      claimId,
-      videoIds: [],
-      clickupTaskIds: [],
-      cause: `videos insert failed: ${iErr.message}`,
-    });
-    throw new Error(`Supabase insert failed (videos): ${iErr.message}`);
-  }
-  if (!insertedVideos || insertedVideos.length !== 3) {
-    await rollback({
-      campusId: campus.id,
-      eventId: event.id,
-      claimId,
-      videoIds: (insertedVideos || []).map((v) => v.id),
-      clickupTaskIds: [],
-      cause: `videos insert returned ${insertedVideos ? insertedVideos.length : 0} rows`,
-    });
-    throw new Error(`Expected 3 videos rows, got ${insertedVideos ? insertedVideos.length : 0}`);
-  }
-
+  const videoIds = [];
   const createdClickupIds = [];
 
   try {
     for (let i = 0; i < 3; i++) {
       const concept = concepts[i];
-      const video = insertedVideos[i];
 
-      // video_quality_scores FK depends on videos.id (which just inserted),
-      // so this is the right stage. Inside the same try — a score failure
-      // triggers the full rollback.
+      let pushed;
+      try {
+        pushed = await pushConceptToClickUp(concept, { campus, student });
+      } catch (err) {
+        if (err.partial?.videoId) videoIds.push(err.partial.videoId);
+        if (err.partial?.taskId) createdClickupIds.push(err.partial.taskId);
+        throw err;
+      }
+      videoIds.push(pushed.videoId);
+      createdClickupIds.push(pushed.taskId);
+
+      // video_quality_scores FK depends on videos.id (just inserted by
+      // pushConceptToClickUp). A score failure triggers the full rollback —
+      // orphan scores with broken FKs are worse than a retry.
       if (Array.isArray(validatorResults) && validatorResults[i]) {
         const vr = validatorResults[i];
         const { error: vqsErr } = await supabase.from('video_quality_scores').insert({
-          video_id: video.id,
+          video_id: pushed.videoId,
           campus_id: campus.id,
           validator_version: vr.validator_version,
           layer1_passed: !!vr.layer1_passed,
@@ -784,30 +1052,13 @@ async function writeConcepts({ campus, student, event, concepts, claimId, valida
         });
         if (vqsErr) throw new Error(`Supabase insert failed (video_quality_scores): ${vqsErr.message}`);
       }
-
-      const task = await clickup.createTask(campus.clickup_list_id, {
-        name: concept.title,
-        description: concept.hook_angle,
-        status: 'idea',
-      });
-
-      const taskId = task.id;
-      createdClickupIds.push(taskId);
-
-      await clickup.setCustomField(taskId, PROJECT_FIELD, concept.script);
-
-      const { error: uErr } = await supabase
-        .from('videos')
-        .update({ clickup_task_id: taskId, updated_at: new Date().toISOString() })
-        .eq('id', video.id);
-      if (uErr) throw new Error(`Supabase update failed (videos.clickup_task_id): ${uErr.message}`);
     }
   } catch (err) {
     await rollback({
       campusId: campus.id,
       eventId: event.id,
       claimId,
-      videoIds: insertedVideos.map((v) => v.id),
+      videoIds,
       clickupTaskIds: createdClickupIds,
       cause: err.message,
     });
@@ -815,7 +1066,6 @@ async function writeConcepts({ campus, student, event, concepts, claimId, valida
   }
 
   // All side effects succeeded — transition the claim to completed.
-  const videoIds = insertedVideos.map((v) => v.id);
   const { error: uErr } = await supabase
     .from('processed_calendar_events')
     .update({ status: 'completed', video_ids: videoIds, completed_at: new Date().toISOString() })
@@ -1038,12 +1288,17 @@ module.exports = {
   runOnce,
   // Legacy alias (pre-stub signature was `run(studentName, campusId)`; now `run(event, campusId)`)
   run: processEvent,
+  // Manual /admin/scripting entry points
+  generateConcepts,
+  refineConcept,
+  pushConceptToClickUp,
+  loadContext,
   // Exposed for tests
   validateConcepts,
+  validateConceptShape,
   buildPrompt,
-  loadContext,
+  buildRefinePrompt,
   writeConcepts,
-  generateConcepts,
   handleVoiceAbort,
   postLogOnlyCommentIfNeeded,
   // Constants
