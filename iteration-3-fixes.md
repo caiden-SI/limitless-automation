@@ -146,9 +146,11 @@ Caiden's free tier in ~3-4 days and start failing.
 
 ## Fix 4 — Self-serve student creation flow with auto-distribution
 
-**Status:** Approved by Scott on 2026-05-07: *"If this is not difficult
-lets do this as well."* — including the auto-distribute variant, not
-just URL-print.
+**Status:** SHIPPED 2026-05-12 as `/students` dashboard console
+(spec: `docs/dashboard-consoles-spec.md` §5). Copy-paste URL UX; the
+auto-distribute variant (SMS/email) is intentionally deferred to v1.5
+per the consoles spec — Scott felt copy-paste cleared the friction
+without the channel-routing complexity. Originally approved 2026-05-07.
 
 **Starting point:** `scripts/create-student.js` already exists (built
 2026-05-07). Wraps the row insertion + URL composition in a CLI. This

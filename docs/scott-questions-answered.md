@@ -175,9 +175,13 @@ Pulled from the answers above so they're easy to track:
 
 ## Items going to iteration-3 backlog as a result of this Q&A
 
-- Manual scripting trigger (Q2)
+- ~~Manual scripting trigger (Q2)~~ — shipped 2026-05-12 as `/scripting`
+  console (docs/dashboard-consoles-spec.md). Auto-push deferred per Scott;
+  review-then-push is the v1 contract.
 - ~~Profile-views cadence move to Friday 9 AM (Q7)~~ — superseded by daily cadence, shipped 2026-05-11
 - Google Sheet sync for Profile-views data (Q8)
 - Brand-account SIGNALS subsection (Q9)
-- Self-serve student creation that auto-distributes onboarding URL
-  (priority task #1, Q6)
+- ~~Self-serve student creation that auto-distributes onboarding URL~~
+  (priority task #1, Q6) — `/students` console shipped 2026-05-12 with
+  copy-paste URL UX; SMS/email auto-distribute remains deferred per spec
+  decision (docs/dashboard-consoles-spec.md §5.5).
