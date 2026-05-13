@@ -10,6 +10,8 @@ const clickupHandler = require('./handlers/clickup');
 const dropboxHandler = require('./handlers/dropbox');
 const frameioHandler = require('./handlers/frameio');
 const onboarding = require('./agents/onboarding');
+const adminScripting = require('./routes/admin-scripting');
+const adminStudents = require('./routes/admin-students');
 const scheduler = require('./lib/scheduler');
 const research = require('./agents/research');
 const performance = require('./agents/performance');
@@ -151,6 +153,14 @@ app.get('/onboarding/student', async (req, res) => {
     res.status(500).json({ error: 'Failed to fetch student' });
   }
 });
+
+// Admin console routes — manual scripting + student creation.
+// Spec: docs/dashboard-consoles-spec.md §6
+app.post('/admin/scripting/generate', adminScripting.generateHandler);
+app.post('/admin/scripting/refine',   adminScripting.refineHandler);
+app.post('/admin/scripting/push',     adminScripting.pushHandler);
+app.post('/admin/students/create',    adminStudents.createHandler);
+app.get('/admin/students/recent',     adminStudents.recentHandler);
 
 // Global error handler — catch unhandled route errors
 app.use((err, _req, res, _next) => {
