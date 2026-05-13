@@ -34,13 +34,15 @@ module.exports = {
     {
       // Static file server for the React dashboard built into dashboard/dist.
       // Reachable over Tailscale by limitlessyt.com tailnet members.
-      // The -s flag enables SPA mode (rewrites unmatched routes to index.html
-      // so React Router client-side routes like /onboard work on refresh).
-      // Binds to 0.0.0.0 so Tailscale-connected devices (phones, laptops)
+      // Custom express server (dashboard/serve.cjs) so static files + SPA
+      // fallback work the same as before, AND /admin, /onboarding, /health
+      // forward to the webhooks server on :3000. The browser hits the
+      // dashboard origin (5173) for everything; without the proxy the API
+      // calls would fall through to the SPA fallback and return index.html
+      // instead of JSON. Binds to 0.0.0.0 so Tailscale-connected devices
       // can reach it, not just localhost.
       name: 'limitless-dashboard',
-      script: 'node_modules/serve/build/main.js',
-      args: '-s dashboard/dist -l tcp://0.0.0.0:5173',
+      script: 'dashboard/serve.cjs',
       instances: 1,
       watch: false,
       autorestart: true,
