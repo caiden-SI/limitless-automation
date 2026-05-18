@@ -314,7 +314,7 @@ async function triggerQA(taskId, campusId) {
 
   const { passed, report } = await qa.runQA(video.id, campus.id);
 
-  if (passed) {
+  if (passed === true) {
     await log({
       campusId: campus.id,
       agent: AGENT_NAME,
@@ -323,7 +323,7 @@ async function triggerQA(taskId, campusId) {
     });
     // QA passed — video is now eligible for Frame.io upload.
     // The actual upload happens when status moves to done.
-  } else {
+  } else if (passed === false) {
     // QA failed. Report + qa_passed=false already persisted by qa.runQA.
     // We log the block so the dashboard surfaces it, but we do NOT flip
     // the ClickUp or Supabase status — operator decides whether to send
@@ -335,6 +335,8 @@ async function triggerQA(taskId, campusId) {
       payload: { taskId, videoId: video.id, issueCount: report?.totalIssues ?? 0 },
     });
   }
+  // passed === null → preconditions missing; qa.runQA already logged
+  // qa_skipped_preconditions and posted the short ClickUp comment.
 
   return { passed, report };
 }

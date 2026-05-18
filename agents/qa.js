@@ -48,6 +48,41 @@ async function runQA(videoId, campusId) {
     const lufsResult = await checkLUFS(video, campusId);
     const stutterResult = await checkStutter(video, campusId, captionResult.cues);
 
+    // Preconditions-missing path: the editor hasn't uploaded the final
+    // video and/or .srt yet. Don't conflate "no files to check" with
+    // "files checked, found broken" — write qa_passed=NULL, post one
+    // short comment, log qa_skipped_preconditions. Real quality issues
+    // (bad LUFS, stutters, brand misspellings) fall through to the
+    // normal pass/fail path below.
+    const preconditionsMissing =
+      captionResult.preconditions_missing === true ||
+      lufsResult.preconditions_missing === true;
+
+    if (preconditionsMissing) {
+      const { error: nullErr } = await supabase
+        .from('videos')
+        .update({ qa_passed: null, updated_at: new Date().toISOString() })
+        .eq('id', videoId);
+      if (nullErr) throw new Error(`Failed to clear qa_passed: ${nullErr.message}`);
+
+      await log({
+        campusId,
+        agent: AGENT_NAME,
+        action: 'qa_skipped_preconditions',
+        status: 'warning',
+        payload: { videoId, title: video.title },
+      });
+
+      if (video.clickup_task_id) {
+        await clickup.addComment(
+          video.clickup_task_id,
+          'QA skipped — final video and .srt not yet found in [PROJECT]. Upload your export before review.'
+        );
+      }
+
+      return { passed: null, report: { skipped: true, reason: 'preconditions_missing' } };
+    }
+
     const allIssues = [
       ...captionResult.issues,
       ...lufsResult.issues,
@@ -125,15 +160,14 @@ async function checkCaptions(video, campusId) {
   try {
     entries = await dropbox.listFolder(projectPath);
   } catch {
-    // [PROJECT] folder might not exist or be empty
-    issues.push('CAPTION: [PROJECT] folder not accessible — cannot check captions');
-    return { issues, cues: null, srtFound: false };
+    // [PROJECT] folder missing or inaccessible — precondition for QA,
+    // not a quality issue. runQA aggregates this flag and short-circuits.
+    return { issues, cues: null, srtFound: false, preconditions_missing: true };
   }
 
   const srtFile = entries.find((e) => e.tag === 'file' && e.name.toLowerCase().endsWith('.srt'));
   if (!srtFile) {
-    issues.push('CAPTION: No .srt file found in [PROJECT] folder');
-    return { issues, cues: null, srtFound: false };
+    return { issues, cues: null, srtFound: false, preconditions_missing: true };
   }
 
   // Download and parse SRT
@@ -292,8 +326,8 @@ async function checkLUFS(video, campusId) {
   try {
     entries = await dropbox.listFolder(projectPath);
   } catch {
-    issues.push('LUFS: [PROJECT] folder not accessible — cannot analyze audio');
-    return { issues, lufs: null, ffmpegAvailable: false };
+    // [PROJECT] folder missing — precondition, not a quality issue.
+    return { issues, lufs: null, ffmpegAvailable: false, preconditions_missing: true };
   }
 
   const videoExts = ['.mp4', '.mov', '.mkv', '.avi', '.webm'];
@@ -302,8 +336,7 @@ async function checkLUFS(video, campusId) {
   );
 
   if (!videoFile) {
-    issues.push('LUFS: No video file found in [PROJECT] folder');
-    return { issues, lufs: null, ffmpegAvailable: false };
+    return { issues, lufs: null, ffmpegAvailable: false, preconditions_missing: true };
   }
 
   // Check if FFmpeg is available — fail closed if missing
