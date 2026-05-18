@@ -113,8 +113,44 @@ async function run(campusId, options = {}) {
           continue;
         }
 
-        // Classify with Claude
-        const classification = await classifyTranscript(transcript, video.platform, campusId);
+        // Pre-check: skip videos whose transcript is essentially just
+        // hashtags or whitespace. Claude returns prose ("I cannot
+        // classify this video because no actual transcript or video
+        // content was provided…") instead of the JSON schema, which
+        // askJson then fails to parse and throws. Cheaper and quieter
+        // to skip up front.
+        const transcriptDensity = transcript.replace(/#\w+/g, '').replace(/\s+/g, '').length;
+        if (transcriptDensity < 30) {
+          await log({
+            campusId,
+            agent: AGENT_NAME,
+            action: 'research_video_skipped_thin_transcript',
+            status: 'warning',
+            payload: { url: video.url, platform: video.platform, density: transcriptDensity },
+          });
+          continue;
+        }
+
+        // Classify with Claude. Defensive fallback: if Claude still
+        // returns prose despite the pre-check (rare edge case),
+        // skip+warn rather than letting the JSON-parse error bubble
+        // up and kill the whole research-batch run.
+        let classification;
+        try {
+          classification = await classifyTranscript(transcript, video.platform, campusId);
+        } catch (err) {
+          if (err && err.message && err.message.includes('No parseable JSON structure found')) {
+            await log({
+              campusId,
+              agent: AGENT_NAME,
+              action: 'research_video_skipped_claude_refused',
+              status: 'warning',
+              payload: { url: video.url, platform: video.platform, errorMessage: err.message },
+            });
+            continue;
+          }
+          throw err;
+        }
 
         // Insert into research_library
         const { error: insertErr } = await supabase.from('research_library').insert({
