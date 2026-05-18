@@ -16,6 +16,18 @@ const DIST = path.join(__dirname, 'dist');
 
 const app = express();
 
+// Skip asset noise so the PM2 log stays signal-rich — index.html and
+// /admin/* API calls log; bundled JS/CSS/images do not.
+const LOG_SKIP_RE = /^\/(assets\/|favicon\.svg$)|\.webp(\?|$)/;
+app.use((req, res, next) => {
+  if (LOG_SKIP_RE.test(req.path)) return next();
+  const start = Date.now();
+  res.on('finish', () => {
+    console.log(`[dashboard] ${req.method} ${req.originalUrl} → ${res.statusCode} in ${Date.now() - start}ms`);
+  });
+  next();
+});
+
 // Single mount with pathFilter: http-proxy-middleware v4 reads req.url
 // AFTER express strips a mount prefix, so app.use('/admin', proxy) ends
 // up forwarding /students/recent (prefix gone) and the webhooks server
