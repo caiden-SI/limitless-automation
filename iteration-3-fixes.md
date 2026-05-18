@@ -21,6 +21,10 @@ preserve cross-references.
 
 ## Fix 1 — Replace "stub mode" headline on the scripting agent card
 
+**Status:** SHIPPED — `dashboard/src/lib/agents.js` line 363-366 has the
+replacement string ("awaiting filming events · N scans this month")
+verbatim per spec.
+
 **Problem:** The scripting agent card on the dashboard renders a headline
 that begins with `stub mode · N scans, 0 events triggered`. The agent is
 fully built and live (1,054 lines in `agents/scripting.js`, atomic claim
@@ -232,6 +236,14 @@ auto-distribute via SMS or email.
 
 ## Fix 5 — One-way Sheet sync for Profile-views data
 
+**Status:** SHIPPED 2026-05-11 as **two-way** sync (commit `2b7ab06`,
+"Iteration-3 batch: Profile-views rebuild + two-way sheet sync..."),
+exceeding the original one-way spec. `tools/sheet-sync.js` exists;
+`agents/profile-views.js` calls `sheet_pull_complete` (Sheet → Supabase,
+pulls new post URLs Scott pastes into student tabs) and
+`sheet_push_complete` (Supabase → Sheet, writes weekly deltas back) on
+every Profile-views run. Verified live via pm2 logs and agent_logs.
+
 **See `sheet-sync-spec.md` for the buildable spec.** That doc has the
 full implementation outline: per-tab dynamic header detection,
 column-find-or-append logic, dry-run mode, three-stage testing
@@ -293,6 +305,12 @@ remains canonical; the Sheet is the read-friendly view.
 ---
 
 ## Fix 6 — Manual scripting trigger
+
+**Status:** SHIPPED 2026-05-13 as the `/scripting` dashboard console
+(see `docs/dashboard-consoles-spec.md`). Per-card REFINE + PUSH TO
+CLICKUP, voice-abort surfaced with Regenerate button. Routes:
+`POST /admin/scripting/generate|refine|push` in `routes/admin-scripting.js`.
+Auto-push deferred per Scott; review-then-push is the v1 contract.
 
 **Problem:** Scripting fires only on Google Calendar events. There is
 no path for "I have an idea right now, generate scripts for it" —
@@ -470,6 +488,13 @@ successfully and write to `student_profile_metrics`.
 
 ## Fix 10 — Calendar attendee matching for Scripting
 
+**Status:** SHIPPED 2026-05-12 (commit `1b9c8af`, "Scripting:
+attendee-email event matching + drop deleted custom-field write").
+`lib/gcal.js` `parseStudentFromEvent` now matches by attendee email
+against `students.email`. `SCRIPTING_IGNORED_ATTENDEE_EMAILS` env var
+filters scott@, charles@, jack.oremus@ before matching. Closes the
+"calendar event format" open item in scott-questions-answered.md.
+
 **Problem:** All filming events on the calendar share the same title
 (`"Limitless Student Videos"`). The current `parseStudentFromEvent`
 matcher in `lib/gcal.js` looks for student names in the event
@@ -569,12 +594,21 @@ attendee-email matching.
 
 ## Fix 11 — Profile-views URL-based scraping refactor
 
-**Status:** Critical. The first scheduled Profile-views run on
-2026-05-08 captured the wrong data — cumulative all-time view counts
-labeled as weekly deltas, with pinned-video distortion blowing up
-the numbers. Caiden manually rebuilt the data to hit Scott's deadline
-by extracting URLs from the spreadsheet and scraping each one
-individually. This fix institutionalizes that recovery into the
+**Status:** SHIPPED 2026-05-11 as part of commit `2b7ab06`
+("Iteration-3 batch: Profile-views rebuild + two-way sheet sync...").
+`agents/profile-views.js` rewritten from channel-level scraping to
+URL-based per-post scraping. Daily 9 AM runs verified producing
+correct weekly deltas (not cumulative all-time totals). 11a/b/c/d/e
+sub-changes all landed together. `scripts/backfill-post-urls.js`
+exists for the one-time backfill from Sheet to Supabase. Original
+problem statement preserved below for reference.
+
+**Original problem context:** The first scheduled Profile-views run
+on 2026-05-08 captured the wrong data — cumulative all-time view
+counts labeled as weekly deltas, with pinned-video distortion blowing
+up the numbers. Caiden manually rebuilt the data to hit Scott's
+deadline by extracting URLs from the spreadsheet and scraping each
+one individually. This fix institutionalized that recovery into the
 agent.
 
 **Problem (four architectural issues found in the May 8 run):**
@@ -942,8 +976,15 @@ depends on for editor-rejection signaling.
 
 ## Fix 12 — Pipeline share-link write targets a removed ClickUp custom field
 
-**Status:** Latent. Gated behind Fix 9 (Frame.io v4 OAuth deferred), so it
-won't fire in production today. Surfaced 2026-05-12 while resolving a
+**Status:** Partial shipped 2026-05-12 (commit `1b9c8af`, "Scripting:
+attendee-email event matching + drop deleted custom-field write").
+The Fix 10 parallel work removed the `CLICKUP_INTERNAL_VIDEO_NAME_FIELD_ID`
+write from `agents/scripting.js`. The `CLICKUP_FRAMEIO_FIELD_ID` write
+in `agents/pipeline.js` `createShareLink` is still latent — gated
+behind Fix 9 (Frame.io v4 OAuth deferred), so it won't fire in
+production today. The moment Fix 9 unblocks, this dormant code path
+needs a decision (option 1: re-add field; option 2: surface URL via
+description/comment). Surfaced 2026-05-12 while resolving a
 parallel `CLICKUP_INTERNAL_VIDEO_NAME_FIELD_ID` failure during the Fix 10
 (calendar attendee matching) verification — the same ClickUp-list-cleanup
 that removed the "Internal Video Name" field also removed "E - Frame Link".
@@ -1009,6 +1050,195 @@ rollback on the first `done` transition.
 
 ---
 
+## Fix 13 — QA precondition awareness (no false-positive fails on missing files)
+
+**Status:** Drafted 2026-05-13. Surfaced during the QA-advisory-hotfix
+investigation. Independent of Fix 14/15 — can ship alone.
+
+**Problem:** QA's two file-locating checks — `checkCaptions` (looks for
+`.srt` in the `[PROJECT]` Dropbox subfolder) and `checkLUFS` (looks for
+the final video file in the same folder) — currently report
+`CAPTION: No .srt file found in [PROJECT] folder` and `LUFS: No video
+file found in [PROJECT] folder` as quality issues. They aren't. They're
+*preconditions* for QA to run at all. When the `[PROJECT]` folder is
+empty (editor hasn't uploaded yet), QA returns "failed" with these
+messages and `qa_passed = false` gets written to Supabase.
+
+Before the QA-advisory hotfix (commit `3c58b6b`, 2026-05-13), this
+auto-flipped the ClickUp task to `waiting` and created the recursive
+loop Scott reported. The hotfix removed the auto-flip, but the
+false-positive comments still post on every `edited` transition. On
+Scott's `5_APS` task this manifested as 4 identical QA reports in his
+ClickUp comments. The noise trains Scott to ignore QA reports entirely,
+which defeats the point of QA in the first place.
+
+**Fix:** Distinguish "preconditions missing" from "quality issues" in
+`agents/qa.js`. If the `[PROJECT]` folder is empty (or contains no
+`.srt`, or contains no video file), early-return a
+`preconditions_missing` signal that `runQA` honors by:
+
+- Posting one short comment instead of a multi-issue report:
+  `QA skipped — final video and .srt not yet found in [PROJECT].
+  Upload your export before review.`
+- Writing `qa_passed = NULL` (not `false`) to Supabase so the dashboard
+  can distinguish "QA hasn't run yet" from "QA ran and failed."
+- Logging a new `qa_skipped_preconditions` action to `agent_logs` so
+  the activity feed surfaces it without confusing it with real
+  failures.
+
+The fix is contained to `agents/qa.js`. ~30–40 lines. No schema
+change required if `videos.qa_passed` already accepts NULL; verify
+the column's nullable status before shipping.
+
+**Files:** `agents/qa.js` (the two `check*` functions + `runQA` glue),
+`dashboard/src/lib/agents.js` if the QA card's headline metric should
+distinguish skipped-vs-failed (probably yes; check what `qa_passed`
+counts surface today).
+
+**Acceptance:**
+
+- A task whose `[PROJECT]` folder is empty produces exactly one short
+  comment on the `edited` transition, not a multi-issue report.
+- `videos.qa_passed = NULL` on those rows. `qa_passed = false` is
+  reserved for real quality issues only (audio loudness off-target,
+  stutters detected, brand-term misspellings, etc.).
+- Re-transitioning the task to `edited` after uploading the files
+  results in QA running normally — finds the files, runs the checks,
+  returns true or false based on actual quality.
+- `agent_logs.qa_skipped_preconditions` rows appear for skipped runs.
+
+---
+
+## Fix 14 — Pipeline robustness for manually-created ClickUp tasks
+
+**Status:** Drafted 2026-05-13. Shape depends on the Charles-workflow
+open item (see bottom of this doc). Don't spec further until that's
+answered.
+
+**Problem:** Pipeline assumes every ClickUp task originates from
+Scripting (calendar event → student match → ClickUp task at status
+`idea` → editor transitions through `ready for shooting` which fires
+Pipeline's folder-creation step). In production, editors create tasks
+directly in ClickUp that skip this origination path. Verified
+2026-05-13 against two examples:
+
+| Task | student_id | dropbox_folder | What happened |
+|---|---|---|---|
+| 5_APS | null | `/austin/5_APS` (created) | Pipeline saw the `ready for shooting` transition and created folders; editor never uploaded to `[PROJECT]` |
+| SHARK_TANK | null | null | Pipeline never saw a `ready for shooting` transition; Charles moved through statuses fast enough that folder creation never fired |
+
+Both have `student_id: null` because `Pipeline.resolveTask`
+auto-creates a stub `videos` row when ClickUp sends a webhook for an
+unknown task, but the stub has no student association, no
+performance-signal context, no scripting context.
+
+**Fix:** Make Pipeline detect manually-created tasks and lazily
+backfill the missing structure.
+
+1. On any status transition, if `videos.dropbox_folder` is null,
+   create the folders (`/{campus}/{title}/[FOOTAGE]/`,
+   `/{campus}/{title}/[PROJECT]/`) before continuing the transition.
+   Patches the SHARK_TANK class — folders exist by the time QA looks.
+2. On the first `ready for editing` transition for a manually-created
+   task (detected by `videos.student_id IS NULL` or some equivalent),
+   post a ClickUp comment with the folder path so the editor knows
+   where to upload: `Upload your final video and .srt to
+   /{campus}/{title}/[PROJECT]/.`
+3. Optionally: try to resolve `student_id` from the ClickUp task
+   assignee (if assignee email matches a `students.email`) or from
+   the task name pattern (e.g., parse `5_APS` as "video 5 for student
+   whose handle is APS"). If unresolvable, leave null and downstream
+   agents handle gracefully.
+
+**Files:** `agents/pipeline.js` (`handleStatusChange`, `resolveTask`,
+`createDropboxFolders`). Possibly a new helper `lib/clickup-task.js`
+for assignee/name-based student resolution mirroring
+`gcal.parseStudentFromEvent`.
+
+**Edge cases:**
+
+- **Test / admin / non-pipeline tasks.** What if Charles
+  intentionally creates tasks that shouldn't go through the
+  production pipeline? Need an opt-out — either a ClickUp custom
+  field flag, a task-name prefix convention (e.g., `_test_*`,
+  `_admin_*`), or a status that's outside the standard pipeline
+  state machine.
+- **Race against rapid status transitions.** SHARK_TANK suggests
+  Charles can move through statuses fast enough that webhooks
+  arrive out-of-order. The lazy-create on any transition handles
+  this by being idempotent — if folders already exist, no-op.
+- **Folder name from task title.** Special characters in titles
+  (slashes, brackets) could break the Dropbox path. Need
+  sanitization analogous to whatever Pipeline does today for
+  Scripting-originated tasks.
+
+**Acceptance:**
+
+- Manually-created tasks like `5_APS` and `SHARK_TANK` get folders
+  created on first webhook receipt (or first transition that
+  surfaces the missing-folder state).
+- Editor receives a comment pointing to the upload path on the
+  first `ready for editing` transition.
+- Fix 13's precondition comments now reference a real folder path,
+  not a missing one — so when the editor uploads, they have a clear
+  destination.
+- A test/admin task with the opt-out marker is silently ignored by
+  Pipeline (no folders, no QA, no comments).
+
+---
+
+## Fix 15 — Admin "create editorial task" surface (v1.5 polish)
+
+**Status:** Drafted 2026-05-13. Lower priority — ships AFTER Fix 14.
+Fix 14 is the safety net; Fix 15 is the happy path.
+
+**Problem:** Even with Fix 14 in place, editors creating ClickUp tasks
+manually is a brittle workflow. Every manual task is an opportunity
+for the editor to forget to set the assignee, mis-type the title,
+skip a status transition. The system *catches* these gracefully after
+Fix 14, but the editor doesn't get the benefit of structured input.
+
+**Fix:** Add a new admin dashboard surface (suggested route:
+`/editorial` or `/tasks/new`) where editors can create a one-off
+editorial task with structured input — pick student from a dropdown,
+type concept title, optionally a description, hit Create. Behind the
+scenes:
+
+1. Insert a properly-shaped `videos` row with `student_id` and
+   `student_name` populated.
+2. Create the ClickUp task at status `idea` (or `ready for editing`
+   if the editor opts to start there).
+3. Create the `[FOOTAGE]` and `[PROJECT]` folders eagerly.
+4. Return a confirmation with the folder paths so the editor knows
+   exactly where to upload.
+
+Mirrors the `/scripting` and `/students` console pattern from the
+dashboard-consoles build. Same shell, same shape.
+
+**Files:** `dashboard/src/pages/EditorialConsole.jsx` + .css;
+`routes/admin-editorial.js`; `server.js` route wiring; possibly a new
+`lib/editorial.js` helper that consolidates videos-row-creation +
+ClickUp-task-creation + folder-creation into one transactional unit.
+Add a third text link `+ /editorial` to the AGENTS section title row
+on `/ops` next to `+ /scripting` and `+ /students`.
+
+**Dependency:** Ship after Fix 14. Until Fix 14 is live, this surface
+duplicates fragile code paths. Once Fix 14 is the safety net, this
+becomes the happy path that most manual tasks flow through, and the
+safety net catches whatever slips.
+
+**Acceptance:**
+
+- From the dashboard, an editor creates an editorial task in
+  &lt;30 seconds with all metadata correct.
+- The created task has identical downstream behavior to a
+  Scripting-originated task — folders exist, student is associated,
+  QA runs cleanly, Performance picks it up.
+- Manual ClickUp task creation still works (Fix 14 safety net), but
+  the dashboard surface produces cleaner data.
+
+---
+
 ## Open items requiring Scott's input (not code fixes — Caiden's job to ask)
 
 These block their corresponding fixes above and don't belong in a
@@ -1028,3 +1258,24 @@ PR:
 
 4. **Daily Apify approval** — confirm the ~$20/month additional cost
    is acceptable before flipping the cron to daily.
+
+5. **Charles's manual-task workflow** (blocks Fix 14/15 scoping).
+   What is Charles actually doing when he creates ClickUp tasks
+   directly (verified: `5_APS`, `SHARK_TANK`, likely more)? Three
+   possibilities and the right Fix 14/15 shape depends on which:
+
+   - **Legitimate non-Scripting editorial work** — back-catalog
+     re-edits, brand-account content, one-offs that don't need a
+     calendar event. Fix 14 (Pipeline robustness) and Fix 15 (admin
+     surface) are both warranted.
+   - **Workaround for limitations** — Scripting is too cumbersome
+     for one-offs, Frame.io being deferred is forcing manual
+     revision tasks, calendar not being kept up to date. Fix the
+     limitations; Fix 14 becomes a safety net for the residual.
+   - **Test/admin tasks** — `5_APS` and `SHARK_TANK` are intentional
+     non-pipeline tasks. Fix is filtering, not folder creation.
+     Need an opt-out marker.
+
+   Recommended action: ask Charles directly (or ask Scott about
+   Charles's workflow). Without this answer, Fix 14/15 implementation
+   could be built around the wrong assumptions.

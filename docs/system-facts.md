@@ -164,20 +164,47 @@ transcripts → Anthropic extracts action items → ClickUp tasks created.
 These are referenced in the State of the System doc but worth flagging
 here because they affect how the diagram should be read.
 
-- **Student onboarding URL distribution** — the /onboard URL exists,
-  but the path for getting it to students with their student ID
-  pre-filled is not yet automated. Currently manual.
-- **Content performance Google Sheet sync** — performance signals live
-  in Supabase, but the team-facing Google Sheet that reflects them is
-  not yet wired up. Two-way sync planned.
+- **Student onboarding URL distribution** — closed 2026-05-13.
+  `/students` dashboard console generates the personalized URL on
+  student creation (copy-paste UX; SMS/email auto-distribute deferred).
+  See `docs/dashboard-consoles-spec.md` §5.
+- **Content performance Google Sheet sync** — closed 2026-05-11 as
+  **two-way** sync (commit `2b7ab06`). `agents/profile-views.js` calls
+  `sheet_pull_complete` (Sheet → Supabase, pulls new post URLs) and
+  `sheet_push_complete` (Supabase → Sheet, writes weekly deltas) on
+  every run. Supabase remains canonical.
 - **Existing student handles** — Profile-views requires TikTok and
   Instagram handles in Supabase. New students populate these via
   Onboarding; existing students may need handles entered manually.
-- **Manual scripting trigger** — Scripting fires on calendar events
-  only. A "generate now" trigger from the dashboard is on the
-  roadmap.
+- **Manual scripting trigger** — closed 2026-05-13. `/scripting`
+  dashboard console accepts a student + concept title and generates
+  3 scripts on demand, with per-card REFINE + PUSH TO CLICKUP. See
+  `docs/dashboard-consoles-spec.md` §4.
 - **Profile-views cadence** — daily 9 AM (flipped from weekly
   Thursday on 2026-05-11; iteration-3 Fix 2 closed).
+- **Calendar event matching** — closed 2026-05-12 (Fix 10). Scripting
+  now matches by attendee email against `students.email`, since all
+  filming events share the same title "Limitless Student Videos".
+
+### Still open
+
+- **Frame.io v4 comment routing + share-link automation** — Fix 9
+  deferred behind Adobe Enterprise OAuth upgrade. Today the comment
+  → ClickUp `waiting` flip and the `done` → share-link write are
+  manual workarounds.
+- **QA precondition awareness** — Fix 13 drafted. QA currently posts
+  noisy "no .srt found / no video found" comments on tasks where the
+  editor hasn't uploaded yet. Not blocking (advisory hotfix on
+  2026-05-13 stopped the recursive waiting-loop), just noise.
+- **Manually-created ClickUp tasks** — editors (Charles) sometimes
+  create tasks directly in ClickUp, bypassing the Scripting →
+  calendar-event origination path. Pipeline catches them via webhook
+  but `videos.student_id` ends up null and folders may not get
+  created. Fix 14/15 drafted; gated on understanding Charles's
+  workflow intent.
+- **Brand-account SIGNALS subsection** — Fix 7 drafted. Tracks
+  alphahigh.school IG + TikTok as a distinct entity in the SIGNALS
+  panel separate from the per-student rollup. Awaiting Scott input.
 
 ---
 

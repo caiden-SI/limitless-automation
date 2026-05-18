@@ -118,16 +118,19 @@ increased run count. iteration-3-fixes.md Fix 2 closed.
 
 ### 8. Is the Profile-views data going to get logged into the sheet you previously built, in addition to the backend?
 
-Currently the data goes to Supabase only (the
-`student_profile_metrics` table). Two-way sync with Scott's Google
-Sheet is a known gap on the iteration-3 backlog. Two paths:
+**Resolved 2026-05-11.** Shipped as **two-way** sync, exceeding the
+original scope (commit `2b7ab06`, "Iteration-3 batch: ... two-way
+sheet sync ..."). On every Profile-views run:
 
-- Scheduled push from Supabase to the Sheet (one-way, simpler)
-- Sheet ↔ Supabase webhook sync (two-way, more robust)
+- **Sheet → Supabase pull** (`sheet_pull_complete`): reads any new
+  post URLs Scott has pasted into student tabs and creates the
+  corresponding `videos` rows so the URL-based scraper picks them up.
+- **Supabase → Sheet push** (`sheet_push_complete`): writes weekly
+  view-count deltas back into the sheet's weekly columns.
 
-We can pick one once Scott confirms which Sheet (link please), what
-columns it expects, and whether he wants to keep editing the Sheet
-directly or treat Supabase as canonical.
+`tools/sheet-sync.js` implements the client. Supabase remains
+canonical; the Sheet is the read-friendly view the team works in.
+iteration-3-fixes.md Fix 5 closed.
 
 ### 9. The SIGNALS section may need an additional subsection for the alphahigh.school IG and TikTok accounts (since we run those).
 
@@ -160,28 +163,53 @@ Scott's mid-week course-correction. Expensive if not.
 
 ## Open items requiring Scott's input
 
-Pulled from the answers above so they're easy to track:
+Pulled from the answers above so they're easy to track. Items marked
+~~struck through~~ are closed; preserved for history.
 
-1. **Calendar event format** — confirm the pattern Scott uses for
-   filming events (title format, attendees, etc.) so Scripting can
-   reliably match events to students.
-2. **Profile-views cadence** — closed 2026-05-11 (Q7); now daily 9 AM.
-3. **Sheet sync direction** — share the link to the existing Google
-   Sheet, confirm columns, and decide one-way or two-way (Q8).
-4. **Apify daily cadence** — once Caiden surfaces the actual cost
-   delta, confirm whether the daily run is worth it (Q10).
+1. ~~**Calendar event format**~~ — **closed 2026-05-12** by Fix 10
+   (commit `1b9c8af`). `lib/gcal.js parseStudentFromEvent` now
+   matches by attendee email against `students.email`. The literal
+   shared title "Limitless Student Videos" works because attendees
+   carry the identity.
+2. ~~**Profile-views cadence**~~ — **closed 2026-05-11** (Q7); now
+   daily 9 AM.
+3. ~~**Sheet sync direction**~~ — **closed 2026-05-11** by Fix 5
+   (commit `2b7ab06`). Shipped as two-way: pulls new post URLs from
+   the Sheet, pushes weekly deltas back. Supabase is canonical.
+4. ~~**Apify daily cadence**~~ — closed when cadence flipped to daily
+   on 2026-05-11; paid plan covers cost.
+
+### Still open
+
+5. **Brand-account SIGNALS subsection (Q9)** — Scott to nominate
+   which brand accounts (alphahigh.school IG + TikTok, anything else?)
+   and confirm Option A (`is_brand_account` flag on existing
+   `students` table) vs Option B (separate `brand_accounts` table).
+   See iteration-3-fixes.md Fix 7 for the implementation outline.
+6. **Adobe Enterprise upgrade for Frame.io v4 OAuth (Fix 9)** — Scott
+   to contact Frame.io support and either upgrade his plan tier or
+   confirm Server-to-Server OAuth should be available on the current
+   tier. Until resolved, comment routing back to ClickUp and
+   share-link auto-population on `done` stay manual.
+7. **Charles's manual-task workflow (Fix 13/14/15 gating)** — Caiden
+   to ask Charles directly what tasks like `5_APS`, `SHARK_TANK`,
+   `3.7K_CRSL`, `MAC_MINI_RESPONSE` represent (legitimate editorial
+   work / workaround / test). The shape of Fix 14/15 depends on the
+   answer; Fix 13 ships independently.
 
 ---
 
 ## Items going to iteration-3 backlog as a result of this Q&A
 
-- ~~Manual scripting trigger (Q2)~~ — shipped 2026-05-12 as `/scripting`
+- ~~Manual scripting trigger (Q2)~~ — shipped 2026-05-13 as `/scripting`
   console (docs/dashboard-consoles-spec.md). Auto-push deferred per Scott;
   review-then-push is the v1 contract.
 - ~~Profile-views cadence move to Friday 9 AM (Q7)~~ — superseded by daily cadence, shipped 2026-05-11
-- Google Sheet sync for Profile-views data (Q8)
-- Brand-account SIGNALS subsection (Q9)
+- ~~Google Sheet sync for Profile-views data (Q8)~~ — shipped 2026-05-11
+  as two-way sync (commit `2b7ab06`). Fix 5 closed.
+- Brand-account SIGNALS subsection (Q9) — still open. Awaiting Scott
+  input on which brand accounts to track + Option A/B schema choice.
 - ~~Self-serve student creation that auto-distributes onboarding URL~~
-  (priority task #1, Q6) — `/students` console shipped 2026-05-12 with
+  (priority task #1, Q6) — `/students` console shipped 2026-05-13 with
   copy-paste URL UX; SMS/email auto-distribute remains deferred per spec
   decision (docs/dashboard-consoles-spec.md §5.5).
