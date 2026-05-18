@@ -153,3 +153,41 @@
   font-size: 11px;
   letter-spacing: 0.04em;
 }
+
+.lim-st-recent-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.lim-st-recent-copy {
+  font: inherit;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.10em;
+  padding: 4px 10px;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--ink);
+  border: 1px solid var(--card-border);
+  cursor: pointer;
+  text-transform: uppercase;
+  transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.lim-st-recent-copy:hover:not(:disabled) {
+  background: var(--ink);
+  color: var(--bg);
+  border-color: var(--ink);
+}
+
+.lim-st-recent-copy:disabled {
+  cursor: not-allowed;
+}
+
+.lim-st-recent-copy--copied,
+.lim-st-recent-copy--copied:hover {
+  background: var(--green, #059669);
+  color: #fff;
+  border-color: var(--green, #059669);
+}

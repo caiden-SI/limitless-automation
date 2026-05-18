@@ -36,6 +36,10 @@ export default function StudentsConsole() {
   const [recentLoading, setRecentLoading] = useState(false);
   const [recentError, setRecentError] = useState(null);
   const [recentVersion, setRecentVersion] = useState(0);
+  // Per-row "COPIED" flash for the recent-students list. Tracked
+  // separately from the create-form `copied` state so concurrent clicks
+  // on multiple rows don't clobber each other.
+  const [copiedRowId, setCopiedRowId] = useState(null);
 
   useEffect(() => {
     if (!campusId) return;
@@ -110,6 +114,23 @@ export default function StudentsConsole() {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     }
+  }
+
+  async function handleRowCopy(rowId, url) {
+    try {
+      await navigator.clipboard.writeText(url);
+    } catch {
+      const ta = document.createElement('textarea');
+      ta.value = url;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+    }
+    setCopiedRowId(rowId);
+    // Functional update guards against a later row's flash clobbering
+    // an earlier row's (concurrent clicks within the 2s window).
+    setTimeout(() => setCopiedRowId((cur) => (cur === rowId ? null : cur)), 2000);
   }
 
   return (
@@ -252,15 +273,31 @@ export default function StudentsConsole() {
           )}
           {recent.length > 0 && (
             <ul className="lim-st-recent">
-              {recent.map((s) => (
-                <li key={s.id}>
-                  <span className="lim-st-recent-name">{s.name}</span>
-                  <span className="lim-st-recent-state">{describeStudent(s)}</span>
-                </li>
-              ))}
+              {recent.map((s) => {
+                const showCopy = !s.onboarding_completed_at && !!s.url;
+                const isFlashing = copiedRowId === s.id;
+                return (
+                  <li key={s.id}>
+                    <span className="lim-st-recent-name">{s.name}</span>
+                    <span className="lim-st-recent-right">
+                      <span className="lim-st-recent-state">{describeStudent(s)}</span>
+                      {showCopy && (
+                        <button
+                          type="button"
+                          className={`lim-st-recent-copy${isFlashing ? ' lim-st-recent-copy--copied' : ''}`}
+                          disabled={isFlashing}
+                          onClick={() => handleRowCopy(s.id, s.url)}
+                          title={s.url}
+                        >
+                          {isFlashing ? 'COPIED' : 'COPY URL'}
+                        </button>
+                      )}
+                    </span>
+                  </li>
+                );
+              })}
             </ul>
           )}
-          <p className="lim-st-hint">Read-only strip. No per-row actions in v1.</p>
         </div>
       </div>
     </div>
