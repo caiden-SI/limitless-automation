@@ -170,7 +170,7 @@ async function updateSession(sessionId, updates) {
 // System prompt
 // ---------------------------------------------------------------------------
 
-function buildSystemPrompt(studentName, answers, currentQuestion, currentSection) {
+function buildSystemPrompt(firstName, answers, currentQuestion, currentSection) {
   const answeredKeys = new Set(Object.keys(answers));
   const sectionList = SECTIONS.map((s) => {
     const answeredInSection = s.questions.filter((q) => answeredKeys.has(q.key));
@@ -178,7 +178,7 @@ function buildSystemPrompt(studentName, answers, currentQuestion, currentSection
     return `  Section ${s.id}: ${s.name} [${mark}]`;
   }).join('\n');
 
-  return `You are a friendly onboarding assistant for Limitless Media Agency. You are helping ${studentName} build their content strategy context document.
+  return `You are the onboarding guide for Limitless Media Agency, helping ${firstName} build their content strategy context document. Address them by their first name (${firstName}) when you address them by name at all.
 
 Your job is to collect information through natural conversation — one question at a time.
 
@@ -194,12 +194,14 @@ ${currentQuestion.optional ? '(This question is optional — skip gracefully if 
 RULES:
 - Ask ONE question at a time. Never dump multiple questions.
 - For What/Why pairs: ask the What first, wait for the response, then ask the Why.
-- If the student gives a vague or one-word answer, probe ONCE with a friendly follow-up like "Can you tell me a bit more about that?"
-- Be warm, encouraging, and conversational — not clinical or form-like.
+- If the student gives a vague or one-word answer, probe ONCE with a brief follow-up like "Can you say a bit more about that?" Then take whatever they give and move on — never probe the same question twice.
+- Keep a measured, even tone — like a knowledgeable peer, not a hype man. Acknowledge each answer in a few words, then go to the next question.
+- Use at most one exclamation point per message, and prefer none.
+- Do not use praise adjectives ("amazing", "love it", "so cool", "awesome", "wow"). A plain "Got it" or "Makes sense" is enough.
 - If a question is optional and the student says they don't have it, skip gracefully and move on.
 - Never repeat a question that was already answered.
-- Keep your messages concise — one idea per message. 2-3 sentences max.
-- When transitioning between sections, give a brief encouraging note like "Great, that wraps up the business context! Now let's talk about your personal brand."
+- Keep your messages concise — one idea per message, 2-3 sentences max.
+- When moving between sections, mark the shift with a plain, brief note like "That covers the business context — next, a bit about your personal brand."
 - Do NOT explain the overall process or how many sections there are unless the student asks.
 - Do NOT say "Question 3 of 12" or anything like that — just ask naturally.
 - Do NOT include any hidden comments, state markers, or metadata in your response. Just write your conversational message.`;
@@ -599,6 +601,10 @@ function extractStudentHandles(answers) {
  * @returns {{ reply: string, section: number, isComplete: boolean, contextDocument: string|null }}
  */
 async function handleMessage({ studentId, campusId, studentName, message }) {
+  // First name drives all conversational address (greeting + system prompt).
+  // The full studentName is kept for the synthesized context document.
+  const firstName = (studentName || '').trim().split(/\s+/)[0] || studentName;
+
   // Load or create server-side session
   const session = await getOrCreateSession(studentId, campusId);
   const answers = session.answers || {};
@@ -618,7 +624,7 @@ async function handleMessage({ studentId, campusId, studentName, message }) {
     }
 
     const currentQ = ALL_QUESTIONS[0];
-    const greeting = `Hey ${studentName}! I'm here to help build your content strategy profile. I'll ask you some questions about your project, your story, and your audience — should take about 15-20 minutes.\n\nLet's start with the basics. What's the name of your brand or project?`;
+    const greeting = `Hey ${firstName} — I'm here to help put together your content strategy profile. I'll ask about your project, your story, and your audience. It should take about 15 minutes.\n\nLet's start with the basics: what's the name of your brand or project?`;
 
     const newHistory = [{ role: 'assistant', content: greeting }];
     await updateSession(session.id, {
@@ -644,7 +650,7 @@ async function handleMessage({ studentId, campusId, studentName, message }) {
 
   if (currentQ && !currentQ.optional && !alreadyProbed && isVagueAnswer(message, currentQ)) {
     // Ask Claude to probe for a better answer
-    const probePrompt = buildSystemPrompt(studentName, answers, currentQ, currentQ.section);
+    const probePrompt = buildSystemPrompt(firstName, answers, currentQ, currentQ.section);
     const probeReply = await askConversation({
       callerAgent: 'onboarding',
       campusId,
@@ -738,7 +744,7 @@ async function handleMessage({ studentId, campusId, studentName, message }) {
     const nextQ = ALL_QUESTIONS[nextIndex];
 
     // Build system prompt with server-side state
-    const systemPrompt = buildSystemPrompt(studentName, answers, nextQ, nextQ.section);
+    const systemPrompt = buildSystemPrompt(firstName, answers, nextQ, nextQ.section);
 
     // If we have an influencer scrape message, inject it before Claude's turn
     if (influencerMessage) {
@@ -864,4 +870,4 @@ async function handleMessage({ studentId, campusId, studentName, message }) {
   };
 }
 
-module.exports = { handleMessage, extractContentFormatPreference, extractStudentHandles };
+module.exports = { handleMessage, extractContentFormatPreference, extractStudentHandles, ALL_QUESTIONS };
