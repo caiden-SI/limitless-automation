@@ -44,8 +44,8 @@ const SECTIONS = [
       { key: 'biggest_challenge', text: 'What\'s been your biggest challenge building this?' },
       { key: 'content_quantity', text: 'How much existing content do you have in your camera roll? (None, Some, or A lot)' },
       { key: 'content_types', text: 'What kind of existing photo and video do you have? (selfie/UGC, screen recordings, user testimonials, b-roll of you working, etc.)' },
-      { key: 'long_form_transcripts', text: 'Have you done any long-form interviews, keynotes, or podcasts? If yes, paste up to 3 transcripts here.', optional: true },
-      { key: 'short_form_transcripts', text: 'Do you have any existing short-form content with proven engagement? If yes, paste up to 3 transcripts.', optional: true },
+      { key: 'long_form_transcripts', text: "Have you done any long-form interviews, keynotes, or podcasts? If yes, paste the actual transcript text — the words that were spoken — for up to 3 of them. Paste the text itself, not a link (we can't open links here). The more complete the text, the more we can pull from it.", optional: true },
+      { key: 'short_form_transcripts', text: "Do you have any short-form posts that did well? If yes, paste the transcript text (what's said out loud or shown on screen) for up to 3. Paste the text itself rather than a link — a few lines each is enough.", optional: true },
     ],
   },
   {
@@ -59,24 +59,20 @@ const SECTIONS = [
   {
     id: 4,
     name: 'AUDIENCE CONTEXT',
+    // Each motivation/desire/pain/fear pair asks its "what" and "why" in a
+    // SINGLE question. Non-destructive merge of the former *_what / *_why pairs:
+    // every data point is preserved, just collected in one turn instead of two.
+    // See the What/Why rule in buildSystemPrompt.
     questions: [
       { key: 'ideal_customer', text: 'Describe your ideal customer.' },
-      { key: 'motivation_1_what', text: 'What is the first thing your ideal customer thinks about when they wake up?' },
-      { key: 'motivation_1_why', text: 'Why do they think about that?' },
-      { key: 'motivation_2_what', text: 'What gets them through the day?' },
-      { key: 'motivation_2_why', text: 'Why does that get them through the day?' },
-      { key: 'desire_1_what', text: 'What do they daydream about?' },
-      { key: 'desire_1_why', text: 'Why do they daydream about that?' },
-      { key: 'desire_2_what', text: 'What did they wish they had?' },
-      { key: 'desire_2_why', text: 'Why do they wish they had that?' },
-      { key: 'pain_1_what', text: 'What is the most annoying thing they deal with daily or weekly?' },
-      { key: 'pain_1_why', text: 'Why is it painful or annoying for them?' },
-      { key: 'pain_2_what', text: 'What is the most painful experience they have had? (Not physical)' },
-      { key: 'pain_2_why', text: 'Why was it painful?' },
-      { key: 'fear_1_what', text: 'What is something they hope no one ever finds out about them?' },
-      { key: 'fear_1_why', text: 'Why do they want to keep that a secret?' },
-      { key: 'fear_2_what', text: 'What have they avoided for years?' },
-      { key: 'fear_2_why', text: 'Why have they avoided it for so long?' },
+      { key: 'motivation_1', text: 'What is the first thing your ideal customer thinks about when they wake up — and why?' },
+      { key: 'motivation_2', text: 'What gets them through the day, and why?' },
+      { key: 'desire_1', text: 'What do they daydream about, and why?' },
+      { key: 'desire_2', text: 'What do they wish they had, and why?' },
+      { key: 'pain_1', text: 'What is the most annoying thing they deal with daily or weekly — and why is it so annoying?' },
+      { key: 'pain_2', text: "What is the most painful experience they've had (not physical), and why was it so painful?" },
+      { key: 'fear_1', text: 'What is something they hope no one ever finds out about them — and why do they want to keep it secret?' },
+      { key: 'fear_2', text: 'What have they avoided for years, and why?' },
     ],
   },
   {
@@ -166,6 +162,36 @@ async function updateSession(sessionId, updates) {
   if (error) throw new Error(`Session update failed: ${error.message}`);
 }
 
+/**
+ * Read persisted session state for resume/rehydration. Read-only — never
+ * mutates. Returns the saved conversation_history, current section, current
+ * question index, and the total question count so the dashboard can render
+ * prior messages and continue from the question the student was on instead of
+ * re-greeting. Returns a fresh-session shape when no session row exists yet.
+ */
+async function getSessionState({ studentId, campusId }) {
+  const { data: session, error } = await supabase
+    .from('onboarding_sessions')
+    .select('conversation_history, current_section, current_question_index')
+    .eq('student_id', studentId)
+    .eq('campus_id', campusId)
+    .maybeSingle();
+
+  if (error) throw new Error(`Session state query failed: ${error.message}`);
+
+  const totalQuestions = ALL_QUESTIONS.length;
+  if (!session) {
+    return { conversationHistory: [], section: 1, questionIndex: 0, totalQuestions };
+  }
+
+  return {
+    conversationHistory: session.conversation_history || [],
+    section: session.current_section || 1,
+    questionIndex: session.current_question_index || 0,
+    totalQuestions,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // System prompt
 // ---------------------------------------------------------------------------
@@ -193,7 +219,7 @@ ${currentQuestion.optional ? '(This question is optional — skip gracefully if 
 
 RULES:
 - Ask ONE question at a time. Never dump multiple questions.
-- For What/Why pairs: ask the What first, wait for the response, then ask the Why.
+- Some questions ask for both a "what" and a "why" in a single question (they include "and why"). Ask the whole question in one message exactly as written — never split the what and the why into two separate turns.
 - If the student gives a vague or one-word answer, probe ONCE with a brief follow-up like "Can you say a bit more about that?" Then take whatever they give and move on — never probe the same question twice.
 - Keep a measured, even tone — like a knowledgeable peer, not a hype man. Acknowledge each answer in a few words, then go to the next question.
 - Use at most one exclamation point per message, and prefer none.
@@ -605,6 +631,10 @@ async function handleMessage({ studentId, campusId, studentName, message }) {
   // The full studentName is kept for the synthesized context document.
   const firstName = (studentName || '').trim().split(/\s+/)[0] || studentName;
 
+  // Total question count drives the granular progress bar. Derived, never
+  // hardcoded, so it tracks SECTIONS automatically (e.g. the audience merge).
+  const totalQuestions = ALL_QUESTIONS.length;
+
   // Load or create server-side session
   const session = await getOrCreateSession(studentId, campusId);
   const answers = session.answers || {};
@@ -620,6 +650,8 @@ async function handleMessage({ studentId, campusId, studentName, message }) {
         section: session.current_section,
         isComplete: false,
         contextDocument: null,
+        questionIndex: session.current_question_index,
+        totalQuestions,
       };
     }
 
@@ -638,6 +670,8 @@ async function handleMessage({ studentId, campusId, studentName, message }) {
       section: currentQ.section,
       isComplete: false,
       contextDocument: null,
+      questionIndex: 0,
+      totalQuestions,
     };
   }
 
@@ -645,6 +679,10 @@ async function handleMessage({ studentId, campusId, studentName, message }) {
   history.push({ role: 'user', content: message });
 
   // ------ Check for vague answer — probe before accepting ------
+  // Clarity follow-ups are capped at exactly ONE per question: probed_current
+  // is set true on the single probe below, and the !alreadyProbed guard blocks
+  // any second probe on the same question. It is reset to false only when we
+  // advance. Do not loosen this — one probe, then accept and move on.
   const currentQ = ALL_QUESTIONS[questionIndex];
   const alreadyProbed = session.probed_current || false;
 
@@ -671,6 +709,8 @@ async function handleMessage({ studentId, campusId, studentName, message }) {
       section: currentQ.section,
       isComplete: false,
       contextDocument: null,
+      questionIndex, // unchanged — still on the same question while probing
+      totalQuestions,
     };
   }
 
@@ -746,11 +786,6 @@ async function handleMessage({ studentId, campusId, studentName, message }) {
     // Build system prompt with server-side state
     const systemPrompt = buildSystemPrompt(firstName, answers, nextQ, nextQ.section);
 
-    // If we have an influencer scrape message, inject it before Claude's turn
-    if (influencerMessage) {
-      history.push({ role: 'assistant', content: influencerMessage });
-    }
-
     const reply = await askConversation({
       callerAgent: 'onboarding',
       campusId,
@@ -759,7 +794,15 @@ async function handleMessage({ studentId, campusId, studentName, message }) {
       maxTokens: 512,
     });
 
-    history.push({ role: 'assistant', content: reply });
+    // If the influencer scrape produced a status note, prepend it to Claude's
+    // next question and return them as ONE assistant turn. The old behavior
+    // pushed the note as its own assistant turn BEFORE this call, which left
+    // `messages` ending on an assistant turn — the API then treated it as a
+    // prefill and often returned an empty reply, so the student saw a blank
+    // bubble and never saw the note.
+    const replyOut = influencerMessage ? `${influencerMessage}\n\n${reply}` : reply;
+
+    history.push({ role: 'assistant', content: replyOut });
 
     // Persist all state — reset probed flag for next question
     await updateSession(session.id, {
@@ -771,10 +814,12 @@ async function handleMessage({ studentId, campusId, studentName, message }) {
     });
 
     return {
-      reply,
+      reply: replyOut,
       section: nextQ.section,
       isComplete: false,
       contextDocument: null,
+      questionIndex: nextIndex,
+      totalQuestions,
     };
   }
 
@@ -867,7 +912,9 @@ async function handleMessage({ studentId, campusId, studentName, message }) {
     section: 6,
     isComplete: true,
     contextDocument,
+    questionIndex: totalQuestions,
+    totalQuestions,
   };
 }
 
-module.exports = { handleMessage, extractContentFormatPreference, extractStudentHandles, ALL_QUESTIONS };
+module.exports = { handleMessage, getSessionState, extractContentFormatPreference, extractStudentHandles, ALL_QUESTIONS };

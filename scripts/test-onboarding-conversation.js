@@ -136,9 +136,12 @@ async function main() {
   console.log(`Total questions in flow: ${ALL_QUESTIONS.length}`);
   hr();
 
+  const pct = (r) => (r.totalQuestions ? Math.round((r.questionIndex / r.totalQuestions) * 100) : 0);
+
   // Greeting (empty message)
   let res = await onboarding.handleMessage({ studentId, campusId, studentName, message: '' });
   console.log(`\nASSISTANT:\n${res.reply}\n`);
+  console.log(`   [progress: Q${res.questionIndex}/${res.totalQuestions} = ${pct(res)}%]\n`);
 
   let guard = 0;
   let probeCount = 0;
@@ -155,6 +158,7 @@ async function main() {
 
     res = await onboarding.handleMessage({ studentId, campusId, studentName, message: answer });
     console.log(`ASSISTANT:\n${res.reply}\n`);
+    console.log(`   [progress: Q${res.questionIndex}/${res.totalQuestions} = ${pct(res)}%]\n`);
 
     const after = await readIndex(studentId, campusId);
     if (after && after.current_question_index === idx && !res.isComplete) {

@@ -17,6 +17,9 @@ export default function Onboarding() {
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [section, setSection] = useState(1);
+  // Granular progress — driven by question index, not section number.
+  const [questionIndex, setQuestionIndex] = useState(0);
+  const [totalQuestions, setTotalQuestions] = useState(null);
 
   // Completion state
   const [isComplete, setIsComplete] = useState(false);
@@ -30,7 +33,9 @@ export default function Onboarding() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, loading]);
 
-  // Fetch student info on mount
+  // Fetch student + saved session state on mount. Rehydrate prior messages and
+  // continue from the current question; only greet a brand-new student. All
+  // conversation state lives server-side, so this is pure resume.
   useEffect(() => {
     if (!studentId || !campusId) {
       setLoadError('Missing student or campus in URL. Use /onboard?student=ID&campus=ID');
@@ -48,17 +53,23 @@ export default function Onboarding() {
           return;
         }
         setStudentName(data.name);
+        if (typeof data.questionIndex === 'number') setQuestionIndex(data.questionIndex);
+        if (data.totalQuestions) setTotalQuestions(data.totalQuestions);
+        if (data.section) setSection(data.section);
+
+        const history = Array.isArray(data.conversationHistory) ? data.conversationHistory : [];
+        if (history.length > 0) {
+          // Resume — render the saved conversation; the last turn is the
+          // question they were on. Wait for their next answer.
+          setMessages(history.map((m) => ({ role: m.role, content: m.content })));
+        } else {
+          // Brand new — fetch the greeting.
+          sendMessage('');
+        }
       })
       .catch((err) => setLoadError(err.message));
-  }, [studentId, campusId]);
-
-  // Send initial greeting once student is loaded
-  useEffect(() => {
-    if (studentName && messages.length === 0) {
-      sendMessage('');
-    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [studentName]);
+  }, [studentId, campusId]);
 
   async function sendMessage(text) {
     // Add user message to display (skip for initial greeting)
@@ -89,6 +100,8 @@ export default function Onboarding() {
 
       setMessages([...newMessages, { role: 'assistant', content: data.reply }]);
       if (data.section) setSection(data.section);
+      if (typeof data.questionIndex === 'number') setQuestionIndex(data.questionIndex);
+      if (data.totalQuestions) setTotalQuestions(data.totalQuestions);
 
       if (data.isComplete && data.contextDocument) {
         setIsComplete(true);
@@ -151,10 +164,14 @@ export default function Onboarding() {
     return <div className="onboarding-loading">Loading...</div>;
   }
 
-  // Progress percentage (0–100). Section 6 displays as complete.
+  // Progress percentage (0–100), driven by question index so the bar advances
+  // with every answer instead of freezing for a whole section. Falls back to 0
+  // until totalQuestions is known. Completion shows full.
   const progressPct = isComplete
     ? 100
-    : Math.min(100, Math.round(((section - 1) / 6) * 100 + (1 / 6) * 100 * 0.5));
+    : totalQuestions
+      ? Math.min(100, Math.round((questionIndex / totalQuestions) * 100))
+      : 0;
 
   // Complete screen
   if (isComplete && contextDocument) {
@@ -232,6 +249,9 @@ export default function Onboarding() {
           Send
         </button>
       </form>
+      <div className="save-note">
+        Your progress is saved automatically — you can close this and come back anytime.
+      </div>
     </div>
   );
 }

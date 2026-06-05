@@ -89,11 +89,14 @@ app.post('/onboarding/message', async (req, res) => {
 
     // Completion guard: if already onboarded, return existing context
     if (student.onboarding_completed_at) {
+      const totalQuestions = onboarding.ALL_QUESTIONS.length;
       return res.json({
         reply: 'Your context is ready!',
         section: 6,
         isComplete: true,
         contextDocument: student.claude_project_context,
+        questionIndex: totalQuestions,
+        totalQuestions,
       });
     }
 
@@ -110,6 +113,8 @@ app.post('/onboarding/message', async (req, res) => {
       section: result.section,
       isComplete: result.isComplete,
       contextDocument: result.contextDocument,
+      questionIndex: result.questionIndex,
+      totalQuestions: result.totalQuestions,
     });
   } catch (err) {
     await log({
@@ -134,7 +139,7 @@ app.get('/onboarding/student', async (req, res) => {
     const { supabase } = require('./lib/supabase');
     const { data: student, error: sErr } = await supabase
       .from('students')
-      .select('id, name, onboarding_completed_at')
+      .select('id, name, onboarding_completed_at, claude_project_context')
       .eq('id', studentId)
       .eq('campus_id', campusId)
       .maybeSingle();
@@ -144,10 +149,37 @@ app.get('/onboarding/student', async (req, res) => {
       return res.status(404).json({ error: 'Student not found' });
     }
 
+    const totalQuestions = onboarding.ALL_QUESTIONS.length;
+
+    // Already onboarded — no in-progress state to resume.
+    if (student.onboarding_completed_at) {
+      return res.json({
+        id: student.id,
+        name: student.name,
+        onboardingCompleted: true,
+        isComplete: true,
+        contextDocument: student.claude_project_context,
+        conversationHistory: [],
+        section: 6,
+        questionIndex: totalQuestions,
+        totalQuestions,
+      });
+    }
+
+    // In progress (or not started) — return saved state so the client can
+    // rehydrate prior messages and continue from the current question.
+    const state = await onboarding.getSessionState({ studentId, campusId });
+
     res.json({
       id: student.id,
       name: student.name,
-      onboardingCompleted: !!student.onboarding_completed_at,
+      onboardingCompleted: false,
+      isComplete: false,
+      contextDocument: null,
+      conversationHistory: state.conversationHistory,
+      section: state.section,
+      questionIndex: state.questionIndex,
+      totalQuestions: state.totalQuestions,
     });
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch student' });
