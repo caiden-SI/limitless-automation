@@ -233,6 +233,56 @@ RULES:
 - Do NOT include any hidden comments, state markers, or metadata in your response. Just write your conversational message.`;
 }
 
+// Deterministic section transitions — server-owned so the agent can't
+// hallucinate a wrong one (e.g. "that wraps up the audience" while there are
+// still audience questions left). Keyed by the section being entered.
+const SECTION_TRANSITIONS = {
+  2: 'That covers the business context — next, a bit about you and your story.',
+  3: "Now let's pin down your niche and the creators in your space.",
+  4: "That's your background covered — now let's get into your audience.",
+  5: 'Last stretch — a few questions about how you like to create content.',
+};
+
+/**
+ * Build the system prompt for the per-turn acknowledgement.
+ *
+ * Claude writes ONLY a one-sentence acknowledgement of the answer just given. It
+ * must not ask a question or add a transition — handleMessage appends the exact
+ * next question (and any section transition) deterministically, so the displayed
+ * question always matches the answer key and can't drift onto an invented one.
+ * Deliberately minimal (no PROGRESS scaffolding, no "next question" text) so
+ * there is nothing tempting Claude to drive the conversation itself.
+ */
+function buildAckPrompt(firstName) {
+  return `You are the onboarding guide for Limitless Media Agency, talking with ${firstName}.
+
+The student just answered a question. Reply with ONE short sentence that acknowledges their answer — nothing else. The next question is added automatically after your message.
+
+RULES:
+- Keep it SHORT — a few words to one brief sentence. A specific nod, NOT a restatement of their whole answer (e.g. "Got it." / "Makes sense." / "Solid — that's a clear niche.").
+- Measured, peer-to-peer tone — like a knowledgeable colleague. No praise adjectives ("amazing", "love it", "so cool", "awesome", "wow", "powerful", "perfect"). At most one exclamation point, and prefer none.
+- Do NOT ask a question or end with a question mark. Do NOT add a transition or say what's coming next.`;
+}
+
+// Praise/hype words the measured tone bans. If the ack slips one in despite the
+// prompt instruction, we drop the ack (the verbatim question still carries the
+// turn) rather than show a cheesy line.
+const PRAISE_RE = /\b(amazing|awesome|incredible|fantastic|brilliant|perfect|perfectly|wow|genius|stellar|phenomenal|excellent|gold|epic|killer|love it|so cool|nailed it)\b/i;
+
+/**
+ * Keep only the first sentence of Claude's acknowledgement, dropping it entirely
+ * if that sentence is a question or carries a banned praise word. Backstop so a
+ * stray invented question or hype line can never reach the student even if the
+ * ack prompt is ignored.
+ */
+function leadAck(text) {
+  if (!text) return '';
+  const first = String(text).trim().split(/(?<=[.!?])\s+/)[0].trim();
+  if (!first || first.endsWith('?')) return '';
+  if (PRAISE_RE.test(first)) return '';
+  return first;
+}
+
 // ---------------------------------------------------------------------------
 // Influencer transcript scraping (Section 3)
 // ---------------------------------------------------------------------------
@@ -783,24 +833,38 @@ async function handleMessage({ studentId, campusId, studentName, message }) {
   if (!isComplete) {
     const nextQ = ALL_QUESTIONS[nextIndex];
 
-    // Build system prompt with server-side state
-    const systemPrompt = buildSystemPrompt(firstName, answers, nextQ, nextQ.section);
+    // Decouple acknowledgement from question to prevent drift. Claude writes
+    // only a brief acknowledgement of the answer just given (and a transition
+    // when the section changes); the EXACT next question is appended verbatim
+    // below, so the displayed question always matches the answer key and can't
+    // drift onto an invented question. The influencer turn skips the ack — its
+    // scrape note already serves as the response to that answer (and prepending
+    // it keeps `messages` ending on the user turn, avoiding the empty-reply
+    // prefill that previously caused a blank bubble).
+    const sectionChanged = !currentQ || nextQ.section !== currentQ.section;
 
-    const reply = await askConversation({
-      callerAgent: 'onboarding',
-      campusId,
-      system: systemPrompt,
-      messages: history,
-      maxTokens: 512,
-    });
+    // Claude writes only a one-sentence acknowledgement (skipped on the
+    // influencer turn, whose scrape note already responds to that answer).
+    // leadAck() trims it to one sentence as a drift backstop.
+    let ackText = '';
+    if (!influencerMessage) {
+      const ack = await askConversation({
+        callerAgent: 'onboarding',
+        campusId,
+        system: buildAckPrompt(firstName),
+        messages: history,
+        maxTokens: 100,
+      });
+      ackText = leadAck(ack);
+    }
 
-    // If the influencer scrape produced a status note, prepend it to Claude's
-    // next question and return them as ONE assistant turn. The old behavior
-    // pushed the note as its own assistant turn BEFORE this call, which left
-    // `messages` ending on an assistant turn — the API then treated it as a
-    // prefill and often returned an empty reply, so the student saw a blank
-    // bubble and never saw the note.
-    const replyOut = influencerMessage ? `${influencerMessage}\n\n${reply}` : reply;
+    // Section transition is server-owned (deterministic); the question is the
+    // exact SECTIONS text. Neither can drift onto something Claude invented.
+    const transition = sectionChanged ? (SECTION_TRANSITIONS[nextQ.section] || '') : '';
+
+    const replyOut = [influencerMessage, ackText, transition, nextQ.text]
+      .filter(Boolean)
+      .join('\n\n');
 
     history.push({ role: 'assistant', content: replyOut });
 
@@ -917,4 +981,4 @@ async function handleMessage({ studentId, campusId, studentName, message }) {
   };
 }
 
-module.exports = { handleMessage, getSessionState, extractContentFormatPreference, extractStudentHandles, ALL_QUESTIONS };
+module.exports = { handleMessage, getSessionState, extractContentFormatPreference, extractStudentHandles, leadAck, ALL_QUESTIONS };
