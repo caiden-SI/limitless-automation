@@ -146,7 +146,24 @@ async function getOrCreateSession(studentId, campusId) {
     .select('*')
     .single();
 
-  if (iErr) throw new Error(`Session create failed: ${iErr.message}`);
+  if (iErr) {
+    // A concurrent first request can create the row between our SELECT and
+    // INSERT (the (student_id, campus_id) UNIQUE constraint). This happens
+    // routinely under React StrictMode's double-mount and is possible in prod
+    // on a double-click or second tab. Treat the duplicate as "already exists"
+    // and return the row the winner created, rather than 500-ing the greeting.
+    if (iErr.code === '23505' || /duplicate key/i.test(iErr.message)) {
+      const { data: raced, error: rErr } = await supabase
+        .from('onboarding_sessions')
+        .select('*')
+        .eq('student_id', studentId)
+        .eq('campus_id', campusId)
+        .maybeSingle();
+      if (rErr) throw new Error(`Session re-query failed: ${rErr.message}`);
+      if (raced) return raced;
+    }
+    throw new Error(`Session create failed: ${iErr.message}`);
+  }
   return created;
 }
 
