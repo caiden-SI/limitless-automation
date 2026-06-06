@@ -44,8 +44,8 @@ const SECTIONS = [
       { key: 'biggest_challenge', text: 'What\'s been your biggest challenge building this?' },
       { key: 'content_quantity', text: 'How much existing content do you have in your camera roll? (None, Some, or A lot)' },
       { key: 'content_types', text: 'What kind of existing photo and video do you have? (selfie/UGC, screen recordings, user testimonials, b-roll of you working, etc.)' },
-      { key: 'long_form_transcripts', text: 'Have you done any long-form interviews, keynotes, or podcasts? If yes, paste up to 3 transcripts here.', optional: true },
-      { key: 'short_form_transcripts', text: 'Do you have any existing short-form content with proven engagement? If yes, paste up to 3 transcripts.', optional: true },
+      { key: 'long_form_transcripts', text: "Have you done any long-form interviews, keynotes, or podcasts? If yes, paste the actual transcript text — the words that were spoken — for up to 3 of them. Paste the text itself, not a link (we can't open links here). The more complete the text, the more we can pull from it.", optional: true },
+      { key: 'short_form_transcripts', text: "Do you have any short-form posts that did well? If yes, paste the transcript text (what's said out loud or shown on screen) for up to 3. Paste the text itself rather than a link — a few lines each is enough.", optional: true },
     ],
   },
   {
@@ -59,24 +59,20 @@ const SECTIONS = [
   {
     id: 4,
     name: 'AUDIENCE CONTEXT',
+    // Each motivation/desire/pain/fear pair asks its "what" and "why" in a
+    // SINGLE question. Non-destructive merge of the former *_what / *_why pairs:
+    // every data point is preserved, just collected in one turn instead of two.
+    // See the What/Why rule in buildSystemPrompt.
     questions: [
       { key: 'ideal_customer', text: 'Describe your ideal customer.' },
-      { key: 'motivation_1_what', text: 'What is the first thing your ideal customer thinks about when they wake up?' },
-      { key: 'motivation_1_why', text: 'Why do they think about that?' },
-      { key: 'motivation_2_what', text: 'What gets them through the day?' },
-      { key: 'motivation_2_why', text: 'Why does that get them through the day?' },
-      { key: 'desire_1_what', text: 'What do they daydream about?' },
-      { key: 'desire_1_why', text: 'Why do they daydream about that?' },
-      { key: 'desire_2_what', text: 'What did they wish they had?' },
-      { key: 'desire_2_why', text: 'Why do they wish they had that?' },
-      { key: 'pain_1_what', text: 'What is the most annoying thing they deal with daily or weekly?' },
-      { key: 'pain_1_why', text: 'Why is it painful or annoying for them?' },
-      { key: 'pain_2_what', text: 'What is the most painful experience they have had? (Not physical)' },
-      { key: 'pain_2_why', text: 'Why was it painful?' },
-      { key: 'fear_1_what', text: 'What is something they hope no one ever finds out about them?' },
-      { key: 'fear_1_why', text: 'Why do they want to keep that a secret?' },
-      { key: 'fear_2_what', text: 'What have they avoided for years?' },
-      { key: 'fear_2_why', text: 'Why have they avoided it for so long?' },
+      { key: 'motivation_1', text: 'What is the first thing your ideal customer thinks about when they wake up — and why?' },
+      { key: 'motivation_2', text: 'What gets them through the day, and why?' },
+      { key: 'desire_1', text: 'What do they daydream about, and why?' },
+      { key: 'desire_2', text: 'What do they wish they had, and why?' },
+      { key: 'pain_1', text: 'What is the most annoying thing they deal with daily or weekly — and why is it so annoying?' },
+      { key: 'pain_2', text: "What is the most painful experience they've had (not physical), and why was it so painful?" },
+      { key: 'fear_1', text: 'What is something they hope no one ever finds out about them — and why do they want to keep it secret?' },
+      { key: 'fear_2', text: 'What have they avoided for years, and why?' },
     ],
   },
   {
@@ -150,7 +146,24 @@ async function getOrCreateSession(studentId, campusId) {
     .select('*')
     .single();
 
-  if (iErr) throw new Error(`Session create failed: ${iErr.message}`);
+  if (iErr) {
+    // A concurrent first request can create the row between our SELECT and
+    // INSERT (the (student_id, campus_id) UNIQUE constraint). This happens
+    // routinely under React StrictMode's double-mount and is possible in prod
+    // on a double-click or second tab. Treat the duplicate as "already exists"
+    // and return the row the winner created, rather than 500-ing the greeting.
+    if (iErr.code === '23505' || /duplicate key/i.test(iErr.message)) {
+      const { data: raced, error: rErr } = await supabase
+        .from('onboarding_sessions')
+        .select('*')
+        .eq('student_id', studentId)
+        .eq('campus_id', campusId)
+        .maybeSingle();
+      if (rErr) throw new Error(`Session re-query failed: ${rErr.message}`);
+      if (raced) return raced;
+    }
+    throw new Error(`Session create failed: ${iErr.message}`);
+  }
   return created;
 }
 
@@ -166,11 +179,41 @@ async function updateSession(sessionId, updates) {
   if (error) throw new Error(`Session update failed: ${error.message}`);
 }
 
+/**
+ * Read persisted session state for resume/rehydration. Read-only — never
+ * mutates. Returns the saved conversation_history, current section, current
+ * question index, and the total question count so the dashboard can render
+ * prior messages and continue from the question the student was on instead of
+ * re-greeting. Returns a fresh-session shape when no session row exists yet.
+ */
+async function getSessionState({ studentId, campusId }) {
+  const { data: session, error } = await supabase
+    .from('onboarding_sessions')
+    .select('conversation_history, current_section, current_question_index')
+    .eq('student_id', studentId)
+    .eq('campus_id', campusId)
+    .maybeSingle();
+
+  if (error) throw new Error(`Session state query failed: ${error.message}`);
+
+  const totalQuestions = ALL_QUESTIONS.length;
+  if (!session) {
+    return { conversationHistory: [], section: 1, questionIndex: 0, totalQuestions };
+  }
+
+  return {
+    conversationHistory: session.conversation_history || [],
+    section: session.current_section || 1,
+    questionIndex: session.current_question_index || 0,
+    totalQuestions,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // System prompt
 // ---------------------------------------------------------------------------
 
-function buildSystemPrompt(studentName, answers, currentQuestion, currentSection) {
+function buildSystemPrompt(firstName, answers, currentQuestion, currentSection) {
   const answeredKeys = new Set(Object.keys(answers));
   const sectionList = SECTIONS.map((s) => {
     const answeredInSection = s.questions.filter((q) => answeredKeys.has(q.key));
@@ -178,7 +221,7 @@ function buildSystemPrompt(studentName, answers, currentQuestion, currentSection
     return `  Section ${s.id}: ${s.name} [${mark}]`;
   }).join('\n');
 
-  return `You are a friendly onboarding assistant for Limitless Media Agency. You are helping ${studentName} build their content strategy context document.
+  return `You are the onboarding guide for Limitless Media Agency, helping ${firstName} build their content strategy context document. Address them by their first name (${firstName}) when you address them by name at all.
 
 Your job is to collect information through natural conversation — one question at a time.
 
@@ -193,16 +236,68 @@ ${currentQuestion.optional ? '(This question is optional — skip gracefully if 
 
 RULES:
 - Ask ONE question at a time. Never dump multiple questions.
-- For What/Why pairs: ask the What first, wait for the response, then ask the Why.
-- If the student gives a vague or one-word answer, probe ONCE with a friendly follow-up like "Can you tell me a bit more about that?"
-- Be warm, encouraging, and conversational — not clinical or form-like.
+- Some questions ask for both a "what" and a "why" in a single question (they include "and why"). Ask the whole question in one message exactly as written — never split the what and the why into two separate turns.
+- If the student gives a vague or one-word answer, probe ONCE with a brief follow-up like "Can you say a bit more about that?" Then take whatever they give and move on — never probe the same question twice.
+- Keep a measured, even tone — like a knowledgeable peer, not a hype man. Acknowledge each answer in a few words, then go to the next question.
+- Use at most one exclamation point per message, and prefer none.
+- Do not use praise adjectives ("amazing", "love it", "so cool", "awesome", "wow"). A plain "Got it" or "Makes sense" is enough.
 - If a question is optional and the student says they don't have it, skip gracefully and move on.
 - Never repeat a question that was already answered.
-- Keep your messages concise — one idea per message. 2-3 sentences max.
-- When transitioning between sections, give a brief encouraging note like "Great, that wraps up the business context! Now let's talk about your personal brand."
+- Keep your messages concise — one idea per message, 2-3 sentences max.
+- When moving between sections, mark the shift with a plain, brief note like "That covers the business context — next, a bit about your personal brand."
 - Do NOT explain the overall process or how many sections there are unless the student asks.
 - Do NOT say "Question 3 of 12" or anything like that — just ask naturally.
 - Do NOT include any hidden comments, state markers, or metadata in your response. Just write your conversational message.`;
+}
+
+// Deterministic section transitions — server-owned so the agent can't
+// hallucinate a wrong one (e.g. "that wraps up the audience" while there are
+// still audience questions left). Keyed by the section being entered.
+const SECTION_TRANSITIONS = {
+  2: 'That covers the business context — next, a bit about you and your story.',
+  3: "Now let's pin down your niche and the creators in your space.",
+  4: "That's your background covered — now let's get into your audience.",
+  5: 'Last stretch — a few questions about how you like to create content.',
+};
+
+/**
+ * Build the system prompt for the per-turn acknowledgement.
+ *
+ * Claude writes ONLY a one-sentence acknowledgement of the answer just given. It
+ * must not ask a question or add a transition — handleMessage appends the exact
+ * next question (and any section transition) deterministically, so the displayed
+ * question always matches the answer key and can't drift onto an invented one.
+ * Deliberately minimal (no PROGRESS scaffolding, no "next question" text) so
+ * there is nothing tempting Claude to drive the conversation itself.
+ */
+function buildAckPrompt(firstName) {
+  return `You are the onboarding guide for Limitless Media Agency, talking with ${firstName}.
+
+The student just answered a question. Reply with ONE short sentence that acknowledges their answer — nothing else. The next question is added automatically after your message.
+
+RULES:
+- Keep it SHORT — a few words to one brief sentence. A specific nod, NOT a restatement of their whole answer (e.g. "Got it." / "Makes sense." / "Solid — that's a clear niche.").
+- Measured, peer-to-peer tone — like a knowledgeable colleague. No praise adjectives ("amazing", "love it", "so cool", "awesome", "wow", "powerful", "perfect"). At most one exclamation point, and prefer none.
+- Do NOT ask a question or end with a question mark. Do NOT add a transition or say what's coming next.`;
+}
+
+// Praise/hype words the measured tone bans. If the ack slips one in despite the
+// prompt instruction, we drop the ack (the verbatim question still carries the
+// turn) rather than show a cheesy line.
+const PRAISE_RE = /\b(amazing|awesome|incredible|fantastic|brilliant|perfect|perfectly|wow|genius|stellar|phenomenal|excellent|gold|epic|killer|love it|so cool|nailed it)\b/i;
+
+/**
+ * Keep only the first sentence of Claude's acknowledgement, dropping it entirely
+ * if that sentence is a question or carries a banned praise word. Backstop so a
+ * stray invented question or hype line can never reach the student even if the
+ * ack prompt is ignored.
+ */
+function leadAck(text) {
+  if (!text) return '';
+  const first = String(text).trim().split(/(?<=[.!?])\s+/)[0].trim();
+  if (!first || first.endsWith('?')) return '';
+  if (PRAISE_RE.test(first)) return '';
+  return first;
 }
 
 // ---------------------------------------------------------------------------
@@ -599,6 +694,14 @@ function extractStudentHandles(answers) {
  * @returns {{ reply: string, section: number, isComplete: boolean, contextDocument: string|null }}
  */
 async function handleMessage({ studentId, campusId, studentName, message }) {
+  // First name drives all conversational address (greeting + system prompt).
+  // The full studentName is kept for the synthesized context document.
+  const firstName = (studentName || '').trim().split(/\s+/)[0] || studentName;
+
+  // Total question count drives the granular progress bar. Derived, never
+  // hardcoded, so it tracks SECTIONS automatically (e.g. the audience merge).
+  const totalQuestions = ALL_QUESTIONS.length;
+
   // Load or create server-side session
   const session = await getOrCreateSession(studentId, campusId);
   const answers = session.answers || {};
@@ -614,11 +717,13 @@ async function handleMessage({ studentId, campusId, studentName, message }) {
         section: session.current_section,
         isComplete: false,
         contextDocument: null,
+        questionIndex: session.current_question_index,
+        totalQuestions,
       };
     }
 
     const currentQ = ALL_QUESTIONS[0];
-    const greeting = `Hey ${studentName}! I'm here to help build your content strategy profile. I'll ask you some questions about your project, your story, and your audience — should take about 15-20 minutes.\n\nLet's start with the basics. What's the name of your brand or project?`;
+    const greeting = `Hey ${firstName} — I'm here to help put together your content strategy profile. I'll ask about your project, your story, and your audience. It should take about 15 minutes.\n\nLet's start with the basics: what's the name of your brand or project?`;
 
     const newHistory = [{ role: 'assistant', content: greeting }];
     await updateSession(session.id, {
@@ -632,6 +737,8 @@ async function handleMessage({ studentId, campusId, studentName, message }) {
       section: currentQ.section,
       isComplete: false,
       contextDocument: null,
+      questionIndex: 0,
+      totalQuestions,
     };
   }
 
@@ -639,12 +746,16 @@ async function handleMessage({ studentId, campusId, studentName, message }) {
   history.push({ role: 'user', content: message });
 
   // ------ Check for vague answer — probe before accepting ------
+  // Clarity follow-ups are capped at exactly ONE per question: probed_current
+  // is set true on the single probe below, and the !alreadyProbed guard blocks
+  // any second probe on the same question. It is reset to false only when we
+  // advance. Do not loosen this — one probe, then accept and move on.
   const currentQ = ALL_QUESTIONS[questionIndex];
   const alreadyProbed = session.probed_current || false;
 
   if (currentQ && !currentQ.optional && !alreadyProbed && isVagueAnswer(message, currentQ)) {
     // Ask Claude to probe for a better answer
-    const probePrompt = buildSystemPrompt(studentName, answers, currentQ, currentQ.section);
+    const probePrompt = buildSystemPrompt(firstName, answers, currentQ, currentQ.section);
     const probeReply = await askConversation({
       callerAgent: 'onboarding',
       campusId,
@@ -665,6 +776,8 @@ async function handleMessage({ studentId, campusId, studentName, message }) {
       section: currentQ.section,
       isComplete: false,
       contextDocument: null,
+      questionIndex, // unchanged — still on the same question while probing
+      totalQuestions,
     };
   }
 
@@ -737,23 +850,40 @@ async function handleMessage({ studentId, campusId, studentName, message }) {
   if (!isComplete) {
     const nextQ = ALL_QUESTIONS[nextIndex];
 
-    // Build system prompt with server-side state
-    const systemPrompt = buildSystemPrompt(studentName, answers, nextQ, nextQ.section);
+    // Decouple acknowledgement from question to prevent drift. Claude writes
+    // only a brief acknowledgement of the answer just given (and a transition
+    // when the section changes); the EXACT next question is appended verbatim
+    // below, so the displayed question always matches the answer key and can't
+    // drift onto an invented question. The influencer turn skips the ack — its
+    // scrape note already serves as the response to that answer (and prepending
+    // it keeps `messages` ending on the user turn, avoiding the empty-reply
+    // prefill that previously caused a blank bubble).
+    const sectionChanged = !currentQ || nextQ.section !== currentQ.section;
 
-    // If we have an influencer scrape message, inject it before Claude's turn
-    if (influencerMessage) {
-      history.push({ role: 'assistant', content: influencerMessage });
+    // Claude writes only a one-sentence acknowledgement (skipped on the
+    // influencer turn, whose scrape note already responds to that answer).
+    // leadAck() trims it to one sentence as a drift backstop.
+    let ackText = '';
+    if (!influencerMessage) {
+      const ack = await askConversation({
+        callerAgent: 'onboarding',
+        campusId,
+        system: buildAckPrompt(firstName),
+        messages: history,
+        maxTokens: 100,
+      });
+      ackText = leadAck(ack);
     }
 
-    const reply = await askConversation({
-      callerAgent: 'onboarding',
-      campusId,
-      system: systemPrompt,
-      messages: history,
-      maxTokens: 512,
-    });
+    // Section transition is server-owned (deterministic); the question is the
+    // exact SECTIONS text. Neither can drift onto something Claude invented.
+    const transition = sectionChanged ? (SECTION_TRANSITIONS[nextQ.section] || '') : '';
 
-    history.push({ role: 'assistant', content: reply });
+    const replyOut = [influencerMessage, ackText, transition, nextQ.text]
+      .filter(Boolean)
+      .join('\n\n');
+
+    history.push({ role: 'assistant', content: replyOut });
 
     // Persist all state — reset probed flag for next question
     await updateSession(session.id, {
@@ -765,10 +895,12 @@ async function handleMessage({ studentId, campusId, studentName, message }) {
     });
 
     return {
-      reply,
+      reply: replyOut,
       section: nextQ.section,
       isComplete: false,
       contextDocument: null,
+      questionIndex: nextIndex,
+      totalQuestions,
     };
   }
 
@@ -861,7 +993,9 @@ async function handleMessage({ studentId, campusId, studentName, message }) {
     section: 6,
     isComplete: true,
     contextDocument,
+    questionIndex: totalQuestions,
+    totalQuestions,
   };
 }
 
-module.exports = { handleMessage, extractContentFormatPreference, extractStudentHandles };
+module.exports = { handleMessage, getSessionState, extractContentFormatPreference, extractStudentHandles, leadAck, ALL_QUESTIONS };

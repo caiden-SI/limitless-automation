@@ -195,6 +195,17 @@
   cursor: not-allowed;
 }
 
+/* Pause/resume reassurance — small muted line under the input bar. */
+.save-note {
+  flex-shrink: 0;
+  text-align: center;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--ob-text-muted);
+  background: var(--ob-surface);
+  padding: 0 20px 10px;
+}
+
 /* Completion screen */
 .complete-screen {
   flex: 1;
